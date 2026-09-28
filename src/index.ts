@@ -1,6 +1,6 @@
-// One surface: the /filez-browse connection.rpc channel (list / diff /
-// fileshow). It carries the deployment's trusted-host fence like every
-// other /api call.
+// One surface: the /filez-browse connection.rpc channel (list / log /
+// diff / tick). It carries the deployment's trusted-host fence like
+// every other /api call.
 // Every read stays inside the workspace (the session tether). The client
 // sends sessionId. The code re-resolves the workspace server-side and
 // containment-checks every relPath (src/containment.ts) lexically — it
@@ -11,27 +11,23 @@
 // same-origin document (no served HTML/SVG to execute, no whole-FS read
 // surface).
 
-import { readFile, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { stat } from "node:fs/promises";
+import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Context } from "@deepseek-ai/cordis";
 import { listDirectory } from "./filesystem.js";
 import { resolveInWorkspace } from "./containment.js";
-import { jj, jjWorkspaceStatus, jjCommitChanges, jjEscapePath, type ChangeEntry, type JjWorkspaceStatusResult } from "./jj.js";
-import { git, gitWorkspaceStatus, gitUntrackedDiff, gitSnapshotListing, gitFileShow, gitCommitChanges, gitLiteralPath, isBadRevision, parseNameStatus, type GitWorkspaceStatusResult } from "./git.js";
-import { snapshotListing, fileShow, worktreeFileShow, absoluteFileShow, REV_RE, type FileShowValue } from "./snapshot.js";
+import { jj, jjWorkspaceStatus, jjCommitChanges, jjLogPage, jjEscapePath, type ChangeEntry, type JjWorkspaceStatusResult } from "./jj.js";
+import { git, gitWorkspaceStatus, gitUntrackedDiff, gitSnapshotListing, gitFileShow, gitCommitChanges, gitLogPage, gitLiteralPath, isBadRevision, parseNameStatus, type GitWorkspaceStatusResult } from "./git.js";
+import { snapshotListing, fileShow, worktreeFileShow, REV_RE, type FileShowValue } from "./snapshot.js";
 import type { ListingValue } from "./filesystem.js";
 
-const name = "filestab";
+const name = "changestab";
 // No hard `inject`. The code reads connection/sessions/sandboxPolicy
 // lazily. connection is absent in tui/headless profiles, so the surface
 // no-ops there.
 const inject: string[] = [];
 const BROWSE_CHANNEL = "/filez-browse";
-// The host serves package-local assets (the vendored mermaid bundle) by
-// absolute path. It resolves the path from this module's own directory.
-const HERE = dirname(fileURLToPath(import.meta.url));
 
 type BrowsePayload = Record<string, unknown>;
 interface RpcError {
@@ -72,7 +68,7 @@ function apply(ctx: Context): void {
       // so it must run with the connection as `this` — calling it through an
       // extracted method reference throws on the first request.
       if (typeof connection.requestRejection !== "function") {
-        log("error", "filestab: connection.requestRejection missing — refusing to mount an unfenced route");
+        log("error", "changestab: connection.requestRejection missing — refusing to mount an unfenced route");
         return;
       }
       const reject = (req: IncomingMessage) => connection.requestRejection(req);
@@ -125,9 +121,9 @@ function apply(ctx: Context): void {
         },
       });
       browseInstalled = true;
-      log("info", `filestab: browse channel registered at ${BROWSE_CHANNEL}`);
+      log("info", `changestab: browse channel registered at ${BROWSE_CHANNEL}`);
     } catch (error) {
-      log("error", `filestab: browse registration failed: ${(error as { message?: string })?.message ?? String(error)}`);
+      log("error", `changestab: browse registration failed: ${(error as { message?: string })?.message ?? String(error)}`);
     }
   };
   install();
@@ -179,7 +175,7 @@ async function persistedWorkspaceRoot(
   // cold root gets identical normalization (canonicalPath + resolvePath) and
   // the deployment's fallback root applies to a cwd-less header exactly as it
   // does for a live session. The resolver reads only `header.cwd` (plus
-  // `events`, for the mode-override scan — filestab ignores the mode half),
+  // `events`, for the mode-override scan — changestab ignores the mode half),
   // so a minimal structural session is a sufficient input.
   const pseudo = { id: sessionId, header: meta, events: [] };
   const root = ctx.get("sandboxPolicy")?.resolve?.({ session: pseudo })?.workspaceRoot;
@@ -226,7 +222,7 @@ const backendVerdict = new Map<string, "jj" | "git" | "none">(); // workspaceRoo
 // .jj/working_copy/tree_state + .jj/repo/op_heads/heads; git: .git/index +
 // .git/HEAD). Quiet cycle: three fs.stat, zero VCS spawns. Verified on jj
 // 0.45 + git 2.55: worktree edits touch neither VCS dir (lazy snapshot) and
-// filestab's own reads (--no-integrate-operation) leave the hot files stable,
+// changestab's own reads (--no-integrate-operation) leave the hot files stable,
 // so the gate cannot trip on its own reads. The hot baseline is re-taken
 // after a deep read anyway (a read that does move the metadata is absorbed).
 // The gate cannot see new/removed files in other dirs — the client's deep
@@ -325,19 +321,15 @@ function envelopeError(error: { code?: string; message?: string; details?: Recor
 //     `commitChanges`. `rev` (a change/commit id) switches the listing to
 //     that commit's snapshot tree (read-only). `vcs` still describes the
 //     worktree. `commitChanges` carries the selected commit's own changeset.
+//   log      { sessionId, offset, limit } → { commits }. One page of the
+//     change log beyond the first `limit` rows (the client's scroll
+//     auto-load): the same rows/order the `list` vcs block's `commits`
+//     carries, starting `offset` back. A short/empty page is the end.
 //   diff     { sessionId, relPath, base: "worktree"|"commit"|<id> } →
 //     { patch, truncated, base }. The host computes it (the old file version
 //     exists only in the VCS object store). Empty patch = "no changes"
 //     state. An UNTRACKED file gets a synthetic full-added diff. The code
 //     refuses a git submodule/gitlink (it does not parse it).
-//   fileshow { sessionId, relPath, rev } → { kind: "text"|"binary", … }, the
-//     file's bytes for the preview. rev "worktree" = the live on-disk file
-//     (plain contained read, no VCS). A change/commit id = that revision.
-//   fileshow-abs { sessionId, path } → { kind: "text"|"binary", … }, a LIVE
-//     file by ABSOLUTE path OUTSIDE the workspace (the External section).
-//     The session is the scope (it must resolve); the path is absolute and
-//     is NOT containment-checked — the caller is the session owner. Same
-//     cap and classification as the worktree fileshow.
 //   tick     { sessionId, dirs?, openFile?, openMtime?, showHidden?, deep? } →
 //     { openFile: "same"|"changed", list: "same" | { listings } }. The
 //     client's heartbeat: three fs.stat gates (the open file vs the
@@ -421,6 +413,37 @@ function makeBrowseHandler(ctx: Context): (endpoint: string, payload: BrowsePayl
           catch { (value as { commitChanges?: unknown[] }).commitChanges = []; }
         }
         return { ok: true, value };
+      } catch (error) {
+        const e = error as { name?: string; message?: string } | null;
+        if (e?.name === "WorkspacePathError")
+          return { ok: false, error: { code: "forbidden", message: e.message ?? "" } };
+        return { ok: false, error: { code: "io-error", message: e?.message ?? String(error) } };
+      }
+    }
+    if (endpoint === "log") {
+      // One page of the change log beyond the first (the client's scroll
+      // auto-load). { sessionId, offset, limit } → { commits }. The backend
+      // is picked from the verdict cache (set by the preceding list); a
+      // cold cache probes vcsStatus. offset/limit are coerced to integers,
+      // so there is no revset/path injection surface. A non-VCS workspace
+      // returns [] (the client then shows nothing further).
+      try {
+        const ws = await resolveWorkspace(ctx, p.sessionId);
+        if ("error" in ws) return { ok: false, error: ws.error };
+        const offset = Math.max(0, Math.floor(Number(p.offset) || 0));
+        const limit = Math.min(100, Math.max(1, Math.floor(Number(p.limit) || 50)));
+        let backend = backendVerdict.get(ws.root);
+        if (backend !== "jj" && backend !== "git") {
+          const vcs = await vcsStatus(ws.root);
+          backend = vcs.ok === true ? vcs.backend : "none";
+          backendVerdict.set(ws.root, backend);
+        }
+        const page = backend === "jj"
+          ? await jjLogPage(ws.root, offset, limit)
+          : backend === "git"
+            ? await gitLogPage(ws.root, offset, limit)
+            : { commits: [] as (import("./jj.js").CommitRow | import("./git.js").GitCommitEntry)[] };
+        return { ok: true, value: page };
       } catch (error) {
         const e = error as { name?: string; message?: string } | null;
         if (e?.name === "WorkspacePathError")
@@ -617,55 +640,6 @@ function makeBrowseHandler(ctx: Context): (endpoint: string, payload: BrowsePayl
         return { ok: false, error: { code: "io-error", message: e?.message ?? String(error) } };
       }
     }
-    if (endpoint === "fileshow") {
-      try {
-        const ws = await resolveWorkspace(ctx, p.sessionId);
-        if ("error" in ws) return { ok: false, error: ws.error };
-        const relPath = typeof p.relPath === "string" ? p.relPath : "";
-        // rev "worktree" = the live file on disk (the in-pane preview's
-        // normal mode). A plain contained read. No VCS backend needed.
-        if (p.rev === "worktree") {
-          const r = await worktreeFileShow(ws.root, relPath);
-          if ("error" in r) return { ok: false, error: { code: r.error, message: r.message } };
-          return { ok: true, value: r };
-        }
-        if (typeof p.rev !== "string" || p.rev === "commit" || !REV_RE.test(p.rev))
-          return { ok: false, error: { code: "bad-request", message: "rev must be 'worktree' or a change id" } };
-        // Backend dispatch via the verdict cache (always set here, an
-        // at-revision fileshow only follows a snapshot listing).
-        const backend = backendVerdict.get(ws.root);
-        const r = backend === "git"
-          ? await gitFileShow(ws.root, p.rev, relPath)
-          : await fileShow(ws.root, p.rev, relPath);
-        if ("error" in r) return { ok: false, error: { code: r.error, message: r.message } };
-        return { ok: true, value: r };
-      } catch (error) {
-        const e = error as { name?: string; message?: string } | null;
-        if (e?.name === "WorkspacePathError")
-          return { ok: false, error: { code: "forbidden", message: e.message ?? "" } };
-        return { ok: false, error: { code: "io-error", message: e?.message ?? String(error) } };
-      }
-    }
-    if (endpoint === "fileshow-abs") {
-      try {
-        // The session is the scope (the same gate every other endpoint
-        // applies). The path is the caller's absolute one: absoluteFileShow
-        // validates absoluteness, and there is deliberately NO containment
-        // here — this endpoint exists to read outside the workspace.
-        const ws = await resolveWorkspace(ctx, p.sessionId);
-        if ("error" in ws) return { ok: false, error: ws.error };
-        if (typeof p.path !== "string" || p.path === "")
-          return { ok: false, error: { code: "bad-request", message: "path must be a non-empty string" } };
-        const r = await absoluteFileShow(p.path);
-        if ("error" in r) return { ok: false, error: { code: r.error, message: r.message } };
-        return { ok: true, value: r };
-      } catch (error) {
-        const e = error as { name?: string; message?: string } | null;
-        if (e?.name === "WorkspacePathError")
-          return { ok: false, error: { code: "forbidden", message: e.message ?? "" } };
-        return { ok: false, error: { code: "io-error", message: e?.message ?? String(error) } };
-      }
-    }
     if (endpoint === "tick") {
       try {
         const ws = await resolveWorkspace(ctx, p.sessionId);
@@ -748,21 +722,6 @@ function makeBrowseHandler(ctx: Context): (endpoint: string, payload: BrowsePayl
         const e = error as { name?: string; message?: string } | null;
         if (e?.name === "WorkspacePathError")
           return { ok: false, error: { code: "forbidden", message: e.message ?? "" } };
-        return { ok: false, error: { code: "io-error", message: e?.message ?? String(error) } };
-      }
-    }
-    if (endpoint === "mermaid") {
-      // The mermaid renderer bundle (dist/mermaid.min.js).
-      // scripts/copy-mermaid.mjs copies it at build time from the
-      // build-time-only mermaid devDep. The file is package-local, not
-      // workspace content, so no session resolution or containment applies.
-      // The client inlines the text into a sealed sandbox iframe's srcdoc,
-      // where the diagram runs.
-      try {
-        const text = await readFile(join(HERE, "mermaid.min.js"), "utf8");
-        return { ok: true, value: { text } };
-      } catch (error) {
-        const e = error as { name?: string; message?: string } | null;
         return { ok: false, error: { code: "io-error", message: e?.message ?? String(error) } };
       }
     }

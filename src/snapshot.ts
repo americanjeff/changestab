@@ -150,8 +150,7 @@ export async function fileShow(workspaceRoot: string, rev: string, relPath: stri
 }
 
 // The live-file read core: stat (isFile), capped read, classify. The caller
-// owns path validation — worktreeFileShow containment-checks first,
-// absoluteFileShow validates absoluteness instead.
+// owns path validation — worktreeFileShow containment-checks first.
 async function readLiveFile(abs: string, name: string): Promise<FileShowResult> {
   let st: Stats;
   try { st = await stat(abs); }
@@ -178,15 +177,3 @@ export async function worktreeFileShow(workspaceRoot: string, relPath: string): 
   return readLiveFile(abs, clean);
 }
 
-// fileshow-abs: a LIVE file by ABSOLUTE path, outside the session
-// workspace. The session is the scope (the caller resolves it); the path is
-// the caller's, so there is no containment — the caller is the session
-// owner, and the read is capped + classified exactly like a worktree read.
-// POSIX absolute (/…) and Windows (C:… / UNC //…) forms pass the gate;
-// anything else is a bad request.
-export async function absoluteFileShow(absPath: string): Promise<FileShowResult> {
-  const clean = String(absPath ?? "");
-  if (clean.includes("\u0000") || !/^(\/|[A-Za-z]:[\\/]|\/\/)/.test(clean))
-    return { error: "bad-request", message: "path must be absolute" };
-  return readLiveFile(clean, clean);
-}

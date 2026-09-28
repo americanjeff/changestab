@@ -33,18 +33,89 @@
 import { execFile } from "node:child_process";
 
 const JJ_FLAGS = ["--no-integrate-operation", "--color", "never"];
-const HEAD_TSV = 'commit_id.short() ++ "\t" ++ description.first_line() ++ "\n"';
-// Commit list for the review dropdown: change id (STABLE across rebase/amend,
-// what the client persists) + empty flag + first description line. `-G` = flat
-// list (no graph). `-n` caps the count (log lists newest first by default,
-// verified 0.44). The empty flag mirrors jj's own `(empty)` marker: a commit
-// whose diff vs its parent(s) adds/removes nothing (verified 0.44 to agree
-// with the default log template's rendering).
+// TSV column order: fixed columns first, free-text LAST (a description line
+// may contain tabs; the parser takes it as the remainder). HEAD_TSV is
+// `jj show -r @ -T` (no graph); LOG_TSV is `jj log -G -n 50 -T` (`-G` = flat
+// list — 0.44 renders the log graph by default).
+// HEAD_TSV carries BOTH ids: the worktree's commit id (its git form) AND its
+// change id (jj's friendly form — the agent's natural handle for `jj
+// describe/squash -r <id>`). The change tree's agent ref tokens quote both.
+// The change id also carries the same shortest(8) prefix/rest split as
+// LOG_TSV, so the working-copy row renders its id the way jj does.
+const HEAD_TSV =
+  'commit_id.short() ++ "\\t" ++ change_id.short() ++ "\\t" ++ ' +
+  'change_id.shortest(8).prefix() ++ "\\t" ++ ' +
+  'change_id.shortest(8).rest() ++ "\\t" ++ ' +
+  'bookmarks.join(",") ++ "\\t" ++ ' +
+  'tags.join(",") ++ "\\t" ++ ' +
+  'self.working_copies().join(",") ++ "\\t" ++ ' +
+  '(if(hidden, "1", "0")) ++ "\\t" ++ ' +
+  '(if(divergent, "1", "0")) ++ "\\t" ++ ' +
+  'self.change_offset() ++ "\\t" ++ ' +
+  'remote_bookmarks.filter(|b| b.tracked()).map(|b| b.name() ++ "@" ++ b.remote() ++ ":" ++ b.tracking_ahead_count().lower() ++ "/" ++ b.tracking_behind_count().lower()).join(",") ++ "\\t" ++ ' +
+  'parents.map(|p| p.commit_id().short()).join(" ") ++ "\\t" ++ ' +
+  'description.first_line() ++ "\\n"';
+// Change-tree log. Template gotchas, all verified against jj 0.45:
+//   - Root-commit methods are called on an explicit receiver: `self.conflict()`
+//     / `self.empty()`. A bare `conflict()` is a FUNCTION lookup and fails
+//     ("Function `conflict` doesn't exist") — bare names only resolve PROPERTIES.
+//   - `self.empty()` mirrors jj's own `(empty)` marker (a commit whose tree
+//     equals the auto-merged parents'), so merges flag correctly without a
+//     diff.stat() computation.
+//   - `author.timestamp().format(...)` — `author.date()` does not exist (the
+//     author is a Signature, no date method).
+//   - `local_bookmarks`/`tags` are COMMIT-REF lists: `.join(",")` exists on
+//     each list, but `++` of two lists is a plain Template with no `join`.
+//     Hence the two separate columns.
+// LOG_TSV carries BOTH ids per row: the change id (the row's identity, the
+// agent's handle) and the commit id (its git form, for cross-referencing).
+// The id pair is split the way jj's own log renders it: `shortest(8)` = the
+// SIGNIFICANT (uniquely identifying) prefix + the rest, minimum 8 characters
+// total — the client highlights the prefix exactly like jj highlights it in
+// the terminal. The parents column (space-joined change ids) feeds the
+// change graph's edges; a parent outside the 50-row window (or the root,
+// all-z id) simply has no row, so the client draws the edge as elided.
+// The glyph column is jj's own node character (its builtin_log_node
+// template, priority working copy > immutable > conflicted > normal:
+// @ / ◆ / × / ○ — the `~` elided case is a pruned graph node and never
+// occurs here, every row is a fetched commit). The HEAD read needs no
+// glyph: the worktree's head is by definition the working copy (@).
+// Ref fidelity (all verified against jj 0.45): `bookmarks` (NOT
+// `local_bookmarks`) renders each ref the way the CLI does — a remote ref as
+// `name@remote`, a conflicted ref with a trailing `??`, an unsynced LOCAL
+// ref with a trailing `*` — so the row's pills carry remote tracking +
+// sync state + conflict sigils for free. `self.working_copies()` names the
+// workspaces whose working copy this commit is (the `ws/0`-style markers).
+// `divergent`/`hidden` + `self.change_offset()` are the CLI's
+// `(divergent)`/`(hidden)` labels + the `/N` change offset (a divergent
+// change id renders as `xyz/0`, `xyz/1`, …). `change_offset()` and
+// `working_copies()` are METHODS (need the `self.` receiver); `divergent`,
+// `hidden`, `bookmarks`, `remote_bookmarks` are PROPERTIES (bare). The
+// tracking column (remote ahead/behind) filters to `tracked()` refs because
+// `tracking_ahead_count()` ERRORS on an untracked remote ref (which would
+// fail the whole `jj log`); `.lower()` is the SizeHint→Integer accessor in
+// 0.45 (`.as_integer()`/`.as_hint()` don't exist there).
 const LOG_TSV =
   'change_id.short() ++ "\\t" ++ ' +
-  'if(diff.stat().total_added() == 0 && diff.stat().total_removed() == 0, "1", "0") ++ ' +
-  '"\\t" ++ description.first_line() ++ "\\n"';
-const MAX_COMMITS = 50; // dropdown length: `-n` caps the process. The parser caps the array
+  'commit_id.short() ++ "\\t" ++ ' +
+  'change_id.shortest(8).prefix() ++ "\\t" ++ ' +
+  'change_id.shortest(8).rest() ++ "\\t" ++ ' +
+  'coalesce(if(current_working_copy, "@"), if(immutable, "◆"), if(conflict, "×"), "○") ++ "\\t" ++ ' +
+  '(if(self.conflict(), "1", "0")) ++ "\\t" ++ ' +
+  '(if(self.empty(), "1", "0")) ++ "\\t" ++ ' +
+  'author.email() ++ "\\t" ++ ' +
+  'author.timestamp().format("%Y-%m-%dT%H:%M:%S") ++ "\\t" ++ ' +
+  'bookmarks.join(",") ++ "\\t" ++ ' +
+  'tags.join(",") ++ "\\t" ++ ' +
+  'self.working_copies().join(",") ++ "\\t" ++ ' +
+  '(if(hidden, "1", "0")) ++ "\\t" ++ ' +
+  '(if(divergent, "1", "0")) ++ "\\t" ++ ' +
+  'self.change_offset() ++ "\\t" ++ ' +
+  'remote_bookmarks.filter(|b| b.tracked()).map(|b| b.name() ++ "@" ++ b.remote() ++ ":" ++ b.tracking_ahead_count().lower() ++ "/" ++ b.tracking_behind_count().lower()).join(",") ++ "\\t" ++ ' +
+  'parents.map(|p| p.commit_id().short()).join(" ") ++ "\\t" ++ ' +
+  'description.first_line() ++ "\\n"';
+const MAX_COMMITS = 50; // change-tree length: `-n` caps the process. The parser caps the array
+const LOG_PAGE_HARD_CAP = 500; // the deepest a log page may reach (10 pages); a page past it returns []
 
 // Failure codes safe to remember per workspace (structural, not transient).
 const STRUCTURAL = new Set(["jj-missing", "not-a-workspace"]);
@@ -159,39 +230,103 @@ export function parseSummary(text: string | Buffer): ChangeEntry[] {
   return out;
 }
 
-/** `jj show -r @ -T <tsv>` stdout → { id, description } | null (first hex-id + tab line). */
-export function parseHead(text: string | Buffer): { id: string; description: string } | null {
+/** `jj show -r @ -T <tsv>` stdout → the worktree row's fields, or null (first TSV line; id = commit id, changeId = the worktree's change id, parents = the head's parent COMMIT ids — the graph's edge from the working-copy row; see HEAD_TSV for the column order). */
+export function parseHead(text: string | Buffer): { id: string; changeId: string; idPrefix: string; idRest: string; parents: string[]; bookmarks: string[]; tags: string[]; workspaces: string[]; hidden: boolean; divergent: boolean; offset: number; tracking: TrackingRef[]; description: string } | null {
   for (const line of String(text).split("\n")) {
-    const m = line.match(/^([0-9a-f]{7,40})\t(.*)$/);
-    if (m) return { id: m[1]!, description: m[2]! };
+    const m = line.match(/^([0-9a-f]{7,40})\t([0-9a-z]{7,40})\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t(0|1)\t(0|1)\t([0-9]+)\t([^\t]*)\t([^\t]*)\t(.*)$/);
+    if (m) return { id: m[1]!, changeId: m[2]!, idPrefix: m[3]!, idRest: m[4]!, parents: m[12]!.split(" ").filter((x) => x !== ""), bookmarks: splitRefs(m[5]!), tags: splitRefs(m[6]!), workspaces: splitRefs(m[7]!), hidden: m[8] === "1", divergent: m[9] === "1", offset: parseInt(m[10]!, 10) || 0, tracking: parseTracking(m[11]!), description: m[13]! };
   }
   return null;
 }
 
+/** A comma-joined bookmark/tag/workspace column → names (an empty column → []). */
+function splitRefs(s: string): string[] {
+  return s === "" ? [] : s.split(",").filter((x) => x !== "");
+}
+
+/** A tracked remote bookmark's ahead/behind counts (the CLI's "ahead 2,
+ *  behind 1" — the tooltip data). The host renders `name@remote:ahead/behind`
+ *  pairs, comma-joined (see LOG_TSV). */
+export type TrackingRef = { name: string; remote: string; ahead: number; behind: number };
+/** `name@remote:ahead/behind,name2@remote2:…` → TrackingRef[] (never fatal). */
+function parseTracking(s: string): TrackingRef[] {
+  if (s === "") return [];
+  const out: TrackingRef[] = [];
+  for (const pair of s.split(",")) {
+    const at = pair.lastIndexOf("@");
+    const colon = pair.lastIndexOf(":");
+    if (at < 0 || colon < at) continue; // malformed — skip
+    const m = pair.slice(colon + 1).match(/^(-?\d+)\/(-?\d+)$/);
+    if (!m) continue;
+    out.push({ name: pair.slice(0, at), remote: pair.slice(at + 1, colon), ahead: parseInt(m[1]!, 10), behind: parseInt(m[2]!, 10) });
+  }
+  return out;
+}
+
 export interface CommitRow {
-  id: string;
+  id: string;        // change id (jj's friendly form) — the row's identity
+  commitId: string;  // commit id (git form) — for cross-referencing
+  idPrefix: string;  // the significant (unique) prefix of `id`, jj's shortest(8)
+  idRest: string;    // the rest of shortest(8) — prefix + rest ≥ 8 chars
+  glyph: string;     // jj's node character: @ working copy, ◆ immutable, × conflicted, ○ normal
+  conflict: boolean;
   empty: boolean;
+  root: boolean;     // jj's root commit (change id all-z): the log's floor
+  author: string;
+  date: string;
+  bookmarks: string[]; // the CLI's ref strings: name, name@remote, + `*`/`??` sigils
+  tags: string[];
+  workspaces: string[]; // workspaces whose working copy is this commit
+  hidden: boolean;      // the CLI's (hidden) label (takes precedence over divergent)
+  divergent: boolean;   // the CLI's (divergent) label: the change has >1 commit
+  offset: number;       // the change offset — rendered as /N when hidden|divergent
+  tracking: TrackingRef[]; // tracked remote bookmarks' ahead/behind (tooltip)
+  parents: string[]; // parent COMMIT ids (short form) — the graph's edges
   description: string;
 }
 
 /**
- * `jj log -G -T <tsv>` stdout → [{ id: changeId, empty, description }]
- * (newest first, capped at MAX_COMMITS). The parser excludes the root
- * revision (all-z change id). It changes nothing. The parser skips non-TSV
- * lines, never fatal. The middle column mirrors jj's own `(empty)` marker
- * (see LOG_TSV): a commit whose diff vs its parent(s) adds/removes nothing.
- * `change_id.short()` is jj's FRIENDLY form, 12 lowercase a–z letters
+ * `jj log -G -T <tsv>` stdout → the change-tree rows (newest first, capped
+ * at MAX_COMMITS). Columns: id (change id), commitId (commit id), idPrefix,
+ * idRest (jj's shortest(8) split), glyph (@/◆/×/○), conflict(0|1),
+ * empty(0|1), author, date, bookmarks (the CLI's ref strings, incl.
+ * `@remote`/`*`/`??`), tags, workspaces, hidden(0|1), divergent(0|1),
+ * change offset (int), tracking (`name@remote:ahead/behind` pairs), parents
+ * (space-joined COMMIT ids), description (see LOG_TSV). The root revision
+ * (all-z change id) is INCLUDED as the log's final row — `root` is set, so the
+ * change tree terminates at a visible floor instead of a bare line out the
+ * bottom edge. The parser skips non-TSV lines and is never fatal. `change_id.short()` is jj's FRIENDLY form, 12 lowercase a–z letters
  * (NOT hex. Full change ids and commit ids are hex). The class is
  * deliberately `[0-9a-z]` so a hex full-id TSV parses too.
  */
-export function parseCommitLog(text: string | Buffer): CommitRow[] {
+export function parseCommitLog(text: string | Buffer, cap: number = MAX_COMMITS): CommitRow[] {
   const out: CommitRow[] = [];
   for (const line of String(text).split("\n")) {
-    const m = line.match(/^([0-9a-z]{7,40})\t(0|1)\t(.*)$/);
+    const m = line.match(/^([0-9a-z]{7,40})\t([0-9a-f]{7,40})\t([0-9a-z]*)\t([0-9a-z]*)\t([^\t]*)\t(0|1)\t(0|1)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t(0|1)\t(0|1)\t([0-9]+)\t([^\t]*)\t([^\t]*)\t(.*)$/);
     if (!m) continue;
-    if (m[1] === "z".repeat(m[1]!.length)) continue; // root
-    out.push({ id: m[1]!, empty: m[2] === "1", description: m[3]! });
-    if (out.length >= MAX_COMMITS) break;
+    const isRoot = m[1] === "z".repeat(m[1]!.length); // jj's root = the log's floor
+    out.push({
+      id: m[1]!,
+      commitId: m[2]!,
+      idPrefix: m[3]!,
+      idRest: m[4]!,
+      glyph: m[5] === "" ? "○" : m[5]!,
+      conflict: m[6] === "1",
+      empty: m[7] === "1",
+      root: isRoot,
+      author: m[8]!,
+      date: m[9]!,
+      bookmarks: splitRefs(m[10]!),
+      tags: splitRefs(m[11]!),
+      workspaces: splitRefs(m[12]!),
+      hidden: m[13] === "1",
+      divergent: m[14] === "1",
+      offset: parseInt(m[15]!, 10) || 0,
+      tracking: parseTracking(m[16]!),
+      parents: m[17]!.split(" ").filter((x) => x !== ""),
+      description: m[18]!,
+    });
+    if (out.length >= cap) break;
   }
   return out;
 }
@@ -241,10 +376,31 @@ export async function jjCommitChanges(workspaceRoot: string, rev: string): Promi
   return parseSummary(s.value).filter(keep);
 }
 
+/**
+ * One page of the change log beyond the first (the `log` endpoint). `offset`
+ * commits are skipped and `limit` returned, in jj's OWN log order (newest
+ * first) — the same order the worktree's first page arrives in, so the client
+ * can append a page below the rows it already holds. The revset is
+ * `builtin_log() ~ @` (jj's default `jj log` scope minus the working copy,
+ * which the head row renders separately). `jj log -n <offset+limit>` fetches
+ * the first `offset+limit` rows and the slice picks this page; the fetch is
+ * capped at LOG_PAGE_HARD_CAP, so a page that reaches past it returns [] —
+ * the client treats a short page as the end of the log. Read-only, like
+ * every other jj call here.
+ */
+export async function jjLogPage(workspaceRoot: string, offset: number, limit: number): Promise<{ commits: CommitRow[] }> {
+  if (offset >= LOG_PAGE_HARD_CAP) return { commits: [] };
+  const need = Math.min(LOG_PAGE_HARD_CAP, offset + limit);
+  const s = await jj(workspaceRoot, ["log", "-G", "-n", String(need), "-r", "builtin_log() ~ @", "-T", LOG_TSV]);
+  if (!s.ok) return { commits: [] };
+  const all = parseCommitLog(s.value, need);
+  return { commits: all.slice(offset, offset + limit) };
+}
+
 export type JjWorkspaceStatusResult =
   | {
       ok: true;
-      head: { id: string; description: string; marker: string };
+      head: { id: string; changeId: string; parents: string[]; bookmarks: string[]; tags: string[]; description: string; marker: string };
       changes: (ChangeEntry & { base: "worktree" | "conflict" })[];
       conflicts: string[];
       commits: CommitRow[];
@@ -255,9 +411,14 @@ export type JjWorkspaceStatusResult =
  * One call → the whole `jj` block for the list response (shape:
  * JjWorkspaceStatusResult). Changes are STRICTLY the working copy
  * (`jj diff` = `@` vs `@-`): a clean worktree shows "no changes" by design.
- * `commits` feeds the review dropdown. A picked change id drives the diff
- * endpoint's `jj diff -r <id>`. The badges stay worktree-based. Conflicts
- * override the letter. They come from `jj status` (they appear in no diff).
+ * `head` + `changes` are the working-copy row of the change tree; `commits`
+ * are the rows below it (jj's default `jj log` scope, `builtin_log() ~ @` —
+ * the worktree's ancestry plus sibling branches from bookmarks/tags). A picked
+ * change id drives the diff endpoint's `jj diff -r <id>`. The badges stay
+ * worktree-based. Conflicts override the letter. They come from `jj status`
+ * (they appear in no diff). Per-commit conflicts come from the log template
+ * (`self.conflict()` — worktree AND historical; the status warning only
+ * covers the worktree).
  */
 export async function jjWorkspaceStatus(
   workspaceRoot: string,
@@ -279,10 +440,20 @@ export async function jjWorkspaceStatus(
   // 2) head(@) + conflicts + the commit list. (`jj show` can append the diff
   //    below the template line. parseHead scans for the TSV line.) A log
   //    failure is NON-FATAL: commits degrades to [], the rest is untouched.
+  //
+  //    The commit revset is `builtin_log() ~ @` — jj's OWN default `jj log`
+  //    scope, minus the working copy (rendered separately as the head row).
+  //    `builtin_log()` is the curated "what a plain `jj log` shows" set: the
+  //    worktree's ancestry PLUS sibling branches reachable from bookmarks /
+  //    tags (a fork's off-path child is visible, matching the terminal). The
+  //    older `ancestors(@-)` was worktree-history-only and silently pruned
+  //    any branch that left the worktree's ancestor path — a fork child with
+  //    no descendant back on the path never rendered. `~ @` drops the working
+  //    copy so it isn't drawn twice; root is already excluded by builtin_log().
   const [headAt, st, log] = await Promise.all([
     jj(workspaceRoot, ["show", "-r", "@", "-T", HEAD_TSV]),
     jj(workspaceRoot, ["status"]),
-    jj(workspaceRoot, ["log", "-G", "-n", String(MAX_COMMITS), "-r", "ancestors(@-)", "-T", LOG_TSV]),
+    jj(workspaceRoot, ["log", "-G", "-n", String(MAX_COMMITS), "-r", "builtin_log() ~ @", "-T", LOG_TSV]),
   ]);
   if (!headAt.ok) return fail(headAt.code, headAt.message);
   const conflicts = (st.ok ? parseConflicts(st.value) : []).filter(insideWorkspace);
@@ -302,10 +473,10 @@ export async function jjWorkspaceStatus(
     if (cur) cur.status = "C";
     else byPath.set(p, { path: p, status: "C", oldPath: null, base: "conflict" });
   }
-  const head = parseHead(headAt.value);
+  const head = parseHead(headAt.value) ?? { id: "", changeId: "", idPrefix: "", idRest: "", parents: [], bookmarks: [], tags: [], workspaces: [], hidden: false, divergent: false, offset: 0, tracking: [], description: "" };
   return {
     ok: true,
-    head: { ...(head ?? { id: "", description: "" }), marker: "@" },
+    head: { ...head, marker: "@" },
     changes: [...byPath.values()],
     conflicts,
     commits,

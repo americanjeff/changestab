@@ -13,6 +13,7 @@ const STRUCTURAL = new Set(["git-missing", "not-a-workspace"]);
 const gitFailCache = new Map<string, string>(); // workspaceRoot → structural failure code
 
 const MAX_COMMITS = 50; // dropdown length (mirrors src/jj.ts)
+const LOG_PAGE_HARD_CAP = 500; // the deepest a log page may reach (mirrors src/jj.ts)
 
 export type GitCode = "git-missing" | "not-a-workspace" | "git-timeout" | "git-overflow" | "git-error";
 export type GitResult =
@@ -95,13 +96,15 @@ export interface NameStatusEntry {
   oldPath?: string | null;
 }
 
-export interface GitHead {
-  id: string;
-  description: string;
-}
-
 export interface GitCommitEntry {
   id: string;
+  conflict: boolean;
+  empty: boolean;
+  author: string;
+  date: string;
+  bookmarks: string[];
+  tags: string[];
+  parents: string[]; // parent short shas (12-hex, like `id`) — the graph's edges
   description: string;
 }
 
@@ -128,11 +131,6 @@ export function parseNameStatus(text: string | Buffer): NameStatusEntry[] {
       if (o && nw) out.push({ path: nw, status, oldPath: o });
       continue;
     }
-    // git C-quotes the whole line when the path has special characters and
-    // no tab survived: `M\t"path with \"quote"` → the parser tries the
-    // quoted rest.
-    m = line.match(/^([MADT])\t(.+)$/);
-    if (m) { out.push({ path: unquoteGitPath(m[2]!), status: m[1]! === "T" ? "M" : m[1]! }); continue; }
   }
   return out;
 }
@@ -168,29 +166,74 @@ export function parseUnmerged(text: string | Buffer): string[] {
   return out;
 }
 
-/** `git log -1 --format=%H%x09%s` stdout → { id: 12-hex, description } | null. */
-export function parseHead(text: string | Buffer): GitHead | null {
+// `git log --numstat --format=%H%x09%P%x09%ae%x09%aI%x09%s` output shape
+// (verified against git 2.5x): per commit, a HEADER line (40-hex sha,
+// space-joined parent shas — empty for a root, author email, strict-ISO
+// author date, subject LAST — it may contain tabs), a blank line, then one
+// NUMSTAT line per changed file (`added\tdeleted\tpath`, `-\t-` for
+// binaries). The next header follows the last numstat line directly.
+const LOG_HEADER = /^([0-9a-f]{40})\t([0-9a-f]{40}(?: [0-9a-f]{40})*)?\t([^\t]*)\t([^\t]*)\t(.*)$/;
+const LOG_NUMSTAT = /^(\d+|-)\t(\d+|-)\t(.*)$/;
+
+/**
+ * One pass over the interleaved log+numstat output → the change-tree rows
+ * (newest first, capped at MAX_COMMITS). `empty` = the commit carries no
+ * numstat line (a mode-only change still counts as non-empty: git prints
+ * `0\t0\tpath`). Git commits store NO conflict state (a merge is just a
+ * commit), so `conflict` is always false here — the worktree's conflicts
+ * arrive via ls-files -u, historical ones are simply undetectable.
+ * `parents` are the parent short shas (12-hex, joinable against `id`) —
+ * the graph's edges. `bookmarks`/`tags` are filled by the caller from
+ * for-each-ref. Non-conforming lines close the current commit's numstat
+ * region (never fatal).
+ */
+export function parseLogNumstat(text: string | Buffer, cap: number = MAX_COMMITS): GitCommitEntry[] {
+  const out: GitCommitEntry[] = [];
+  let cur: GitCommitEntry | null = null;
   for (const line of String(text).split("\n")) {
-    const m = line.match(/^([0-9a-f]{7,40})\t(.*)$/);
-    if (m) return { id: m[1]!.slice(0, 12), description: m[2]! };
+    if (line === "") continue;
+    const h = line.match(LOG_HEADER);
+    if (h) {
+      cur = {
+        id: h[1]!.slice(0, 12),
+        conflict: false,
+        empty: true,
+        author: h[3]!,
+        date: h[4]!,
+        bookmarks: [],
+        tags: [],
+        parents: (h[2] ?? "").split(" ").filter((x) => x !== "").map((s) => s.slice(0, 12)),
+        description: h[5]!,
+      };
+      out.push(cur);
+      if (out.length >= cap) { cur = null; continue; }
+      continue;
+    }
+    if (LOG_NUMSTAT.test(line)) { if (cur) cur.empty = false; continue; }
+    cur = null;
   }
-  return null;
+  return out;
 }
 
 /**
- * `git log --format=%H%x09%s` stdout → [{ id: 12-hex, description }] (newest
- * first, capped at MAX_COMMITS). The shape is the same as jj's
- * parseCommitLog. Git ids are hex (sliced to 12, the same width as jj's
- * friendly 12-char change ids). The client's `[0-9a-z]` rev alphabet covers
- * both. The parser skips non-TSV lines (never fatal).
+ * `git for-each-ref refs/heads --format=%(refname:short)%00%(objectname)`
+ * stdout → (12-hex sha → branch names). One line per branch. Git tags are
+ * NOT mapped (an annotated tag's objectname is the tag object, not the
+ * commit; jj's tag pills come from the jj template, v1 git rows carry
+ * branches only). Non-conforming lines skipped.
  */
-export function parseCommitLog(text: string | Buffer): GitCommitEntry[] {
-  const out: GitCommitEntry[] = [];
+export function parseForEachRef(text: string | Buffer): Map<string, string[]> {
+  const out = new Map<string, string[]>();
   for (const line of String(text).split("\n")) {
-    const m = line.match(/^([0-9a-f]{7,40})\t(.*)$/);
-    if (!m) continue;
-    out.push({ id: m[1]!.slice(0, 12), description: m[2]! });
-    if (out.length >= MAX_COMMITS) break;
+    const i = line.indexOf("\u0000");
+    if (i < 0) continue;
+    const name = line.slice(0, i);
+    const sha = line.slice(i + 1);
+    if (!name || !/^[0-9a-f]{40}$/.test(sha)) continue;
+    const key = sha.slice(0, 12);
+    const cur = out.get(key);
+    if (cur) cur.push(name);
+    else out.set(key, [name]);
   }
   return out;
 }
@@ -249,11 +292,37 @@ export interface GitChangeEntry {
   base: "worktree" | "conflict";
 }
 
+/**
+ * One page of the change log beyond the first (the `log` endpoint). `git log
+ * --skip <offset> -n <limit>` returns `limit` commits starting `offset` back
+ * from HEAD, in git's own order (newest first) — the same order the first
+ * page arrives in, so the client appends it below the rows it holds. HEAD is
+ * included (page 0's row 0 IS HEAD, jj parity). Branch pills are filled from
+ * for-each-ref (the branch→sha map is stable across pages). Capped at
+ * LOG_PAGE_HARD_CAP: a page past it returns [] — the client treats a short
+ * page as the end of the log. Read-only, like every other git call here.
+ */
+export async function gitLogPage(workspaceRoot: string, offset: number, limit: number): Promise<{ commits: GitCommitEntry[] }> {
+  if (offset >= LOG_PAGE_HARD_CAP) return { commits: [] };
+  const l = Math.min(limit, LOG_PAGE_HARD_CAP - offset);
+  const [log, refs] = await Promise.all([
+    git(workspaceRoot, ["log", "--skip", String(offset), "-n", String(l), "--numstat", "--format=%H%x09%P%x09%ae%x09%aI%x09%s"]),
+    git(workspaceRoot, ["for-each-ref", "refs/heads", "--format=%(refname:short)%00%(objectname)"]),
+  ]);
+  if (!log.ok) return { commits: [] };
+  const commits = parseLogNumstat(log.value, l);
+  if (refs.ok) {
+    const bySha = parseForEachRef(refs.value);
+    for (const c of commits) c.bookmarks = bySha.get(c.id) ?? [];
+  }
+  return { commits };
+}
+
 export type GitWorkspaceStatusResult =
   | {
       ok: true;
       backend: "git";
-      head: { id: string; description: string; marker: string };
+      head: { id: string; description: string; bookmarks: string[]; tags: string[]; marker: string };
       changes: GitChangeEntry[];
       conflicts: string[];
       commits: GitCommitEntry[];
@@ -265,7 +334,9 @@ export type GitWorkspaceStatusResult =
  * The function returns GitWorkspaceStatusResult. head.id is 12-hex (""
  * when no commits yet), marker "HEAD", change statuses A|M|D|R|C|U,
  * commits ≤50 newest first with HEAD INCLUDED (jj parity: the newest
- * commit stays reviewable).
+ * commit stays reviewable). `head` here is the newest COMMIT (git has no
+ * working-copy commit): the change tree's uncommitted row is built
+ * client-side from `changes`, the jj analog.
  *
  * Changes are worktree-vs-HEAD (staged + unstaged). Git has no snapshot
  * boundary, so `diff HEAD` is the single source. Untracked files are the
@@ -293,22 +364,34 @@ export async function gitWorkspaceStatus(
   if (s1.ok) tracked = parseNameStatus(s1.value);
   else if (!isBadRevision(s1)) return fail(s1.code, s1.message);
 
-  // 2) untracked + conflicts + head & commit list, in parallel (each failure
+  // 2) untracked + conflicts + log + branch tips, in parallel (each failure
   //    non-fatal: the remaining letters/sources stand on their own). The log
-  //    read serves both head (line 0) and the dropdown list (lines 1..N). A
-  //    no-commits-yet repo fails both (head → empty marker, list → []).
-  const [un, st, log] = await Promise.all([
+  //    read (--numstat interleaved, ONE spawn) serves head (row 0) and the
+  //    tree rows, and gives each row its empty flag for free. for-each-ref
+  //    maps branch names onto the rows (12-hex join). A no-commits-yet repo
+  //    fails the log (head → empty marker, list → []).
+  const [un, st, log, refs] = await Promise.all([
     git(workspaceRoot, ["-c", "core.quotepath=0", "ls-files", "--others", "--exclude-standard"]),
     git(workspaceRoot, ["ls-files", "-u"]),
-    git(workspaceRoot, ["log", "-n", String(MAX_COMMITS), "--format=%H%x09%s"]),
+    git(workspaceRoot, ["log", "-n", String(MAX_COMMITS), "--numstat", "--format=%H%x09%P%x09%ae%x09%aI%x09%s"]),
+    git(workspaceRoot, ["for-each-ref", "refs/heads", "--format=%(refname:short)%00%(objectname)"]),
   ]);
   const untracked = un.ok ? parseUntracked(un.value).filter(insideWorkspace) : [];
   const conflicts = st.ok ? parseUnmerged(st.value).filter(insideWorkspace) : [];
-  const logText = log.ok ? log.value : "";
-  const head = log.ok ? parseHead(logText) : null;
-  // Includes line 0 (HEAD): the dropdown's worktree entry is the LIVE tree
-  // (a different view), so HEAD must stay selectable for its own diff.
-  const commits = log.ok ? parseCommitLog(logText) : [];
+  const commits = log.ok ? parseLogNumstat(log.value) : [];
+  if (refs.ok) {
+    const bySha = parseForEachRef(refs.value);
+    for (const c of commits) c.bookmarks = bySha.get(c.id) ?? [];
+  }
+  // Row 0 IS HEAD: the uncommitted row is a different view (from changes),
+  // so HEAD must stay selectable for its own diff.
+  const headRow = commits[0] ?? null;
+  const head = {
+    id: headRow ? headRow.id : "",
+    description: headRow ? headRow.description : "",
+    bookmarks: headRow ? headRow.bookmarks : [],
+    tags: [] as string[],
+  };
 
   // 3) merge: tracked (worktree base) → U's (worktree base. The diff
   //    endpoint special-cases them via --no-index) → conflicts override.
@@ -329,7 +412,7 @@ export async function gitWorkspaceStatus(
   return {
     ok: true,
     backend: "git",
-    head: { ...(head ?? { id: "", description: "" }), marker: "HEAD" },
+    head: { ...head, marker: "HEAD" },
     changes: [...byPath.values()],
     conflicts,
     commits,
@@ -340,7 +423,7 @@ export async function gitWorkspaceStatus(
  * The selected commit's own changeset (vs its parent. Root = vs the empty
  * tree): `git log -1 --name-status --format= <rev>` → [{ path, status,
  * oldPath }]. Same shape and letters as gitWorkspaceStatus's changes. The
- * output feeds the snapshot-mode badges/rollups (index.ts's
+ * output feeds the change's file badges (index.ts's
  * commitChanges slot). Root commits diff against the empty tree (git log's
  * default). A failure (non-git workspace, rewritten rev) → [] (badges
  * absent, the listing stands).

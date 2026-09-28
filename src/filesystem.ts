@@ -1,4 +1,4 @@
-// Workspace-scoped, read-only FS operations for filestab: directory listings
+// Workspace-scoped, read-only FS operations for changestab: directory listings
 // (listDirectory) and MIME guessing (mimeFor). The code resolves every input
 // path through resolveInWorkspace before FS access. That step guarantees
 // containment. File-content reads are NOT here. src/snapshot.ts owns them.

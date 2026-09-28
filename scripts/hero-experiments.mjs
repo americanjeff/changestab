@@ -107,7 +107,7 @@ async function captureVariant(page, v) {
 }
 
 async function main() {
-  const root = join(tmpdir(), `filestab-hero-${randomBytes(4).toString("hex")}`);
+  const root = join(tmpdir(), `changestab-hero-${randomBytes(4).toString("hex")}`);
   mkdirSync(root, { recursive: true });
   rmSync(OUT, { recursive: true, force: true });
   mkdirSync(OUT, { recursive: true });

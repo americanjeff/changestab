@@ -1,8 +1,10 @@
-/* filestab client styles. Not linked into any HTML: scripts/inject-css.mjs
+/* changestab client styles. Not linked into any HTML: scripts/inject-css.mjs
    embeds this file as a string constant in the client bundle, because the
    dsh web shell's module loader has no asset pipeline. */
 .dswFiles_root{position:relative;display:flex;flex-direction:column;height:100%;min-height:0}
-/*Nav column header (inside the browse pane): the root path row, the header controls, and the nav's own HIDE toggle at the right end (the state pair's expanded side). Unmounts with the pane when the nav is collapsed.*/
+/*The Changes tab's chip icon (the sidebar.right.pane.tab.title slot): the stock files chip icon's shape — flex:none, inheriting the chip's ink.*/
+.dswFiles_tabTitleIcon{flex:none}
+/*Nav column header: the root path row, reload, and the nav's own HIDE at the right end. Unmounts with the pane when the nav is collapsed.*/
 .dswFiles_header{box-sizing:border-box;border-bottom:.5px solid var(--dsw-alias-border-l3);flex:none;align-items:center;gap:4px;height:38px;padding:0 0 0 8px;display:flex}
 /*The nav column's toggle: a STATE PAIR, one control per state — HIDE (») in the nav's header, RESTORE («) in the view bar's right end while the nav is hidden. Both share this class so the pair reads as one control; each renders its own static double chevron, so no rotation. margin-left:auto pins the restore button to the view bar's right end and is a no-op in the nav header (the path row already takes the free space).*/
 .dswFiles_navToggle{margin-left:auto;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:6px;width:24px;height:24px;flex:none;display:inline-flex;align-items:center;justify-content:center}
@@ -14,9 +16,7 @@
 .dswFiles_pathText{flex:none;margin-right:auto}
 .dswFiles_pathDirectory{color:var(--dsw-alias-label-tertiary)}
 .dswFiles_pathName{color:var(--dsw-alias-label-primary)}
-/*In-place path edit: swaps into the path row; Enter commits, Escape/blur cancels.*/
-.dswFiles_pathInput{box-sizing:border-box;min-width:0;flex:1;height:20px;color:var(--dsw-alias-label-primary);background:0 0;border:none;outline:none;font-size:12px;line-height:20px;padding:0}
-/*The header's 28px tool buttons (edit path, reload).*/
+/*The header's 28px tool buttons (edit path, reload, show-hidden-files).*/
 .dswFiles_tool{width:28px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:6px;flex:none;justify-content:center;align-items:center;padding:6px;line-height:1;display:inline-flex}
 .dswFiles_tool:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
 /*The divider is a draggable handle; FilesView writes --filez-nav on this element during the drag, with no re-render per pointermove.*/
@@ -34,82 +34,17 @@
 /*loading/empty/truncated/failed state. File rows pair a status letter with a*/
 /*font cue on the name so the letter is never the only signal.*/
 .dswFiles_tree{scrollbar-gutter:stable;flex:auto;min-height:0;margin-left:2px;padding:8px 8px 8px 0;overflow:auto}
-.dswFiles_level{margin:0;padding:0;list-style:none}
-.dswFiles_level .dswFiles_level{padding-left:18px}
-.dswFiles_item{margin:0;padding:0}
-.dswFiles_row{width:100%;min-width:0;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:10px;align-items:center;gap:6px;padding:5px 10px;display:flex}
-.dswFiles_row:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dswFiles_row:focus-visible{outline:1px solid var(--dsw-alias-state-focus-ring,currentColor);outline-offset:-1px}
-.dswFiles_rowSelected,.dswFiles_rowSelected:hover{background:var(--dsw-alias-interactive-bg-active,var(--dsw-alias-interactive-bg-hover))}
 .dswFiles_rowIcon{color:var(--dsw-alias-label-tertiary);flex:none}
-.dswFiles_rowIconSpacer{flex:none;width:16px}
-.dswFiles_name{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}
-.dswFiles_nameM{font-weight:600}
-.dswFiles_nameAU{font-style:italic}
-.dswFiles_nameD{opacity:.55;text-decoration:line-through}
 /*A directory's level state that is not (yet) a listing.*/
 .dswFiles_note{color:var(--dsw-alias-label-tertiary);margin:0;padding:3px 10px;font-size:12px;list-style:none}
 .dswFiles_noteErr{color:var(--dsw-alias-state-error-primary)}
-.dswFiles_status{padding:4px 6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
 .dswFiles_previewEmpty{padding:20px;font-size:13px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
 .dswFiles_previewImageWrap{flex:1 1 0;justify-content:center;align-items:center;min-height:0;display:flex;overflow:auto}
 .dswFiles_previewImage{max-width:100%;max-height:100%;object-fit:contain;display:block}
-.dswFiles_previewPdf{flex:1 1 0;width:100%;min-height:320px;border:none}
-.dswFiles_previewText{white-space:pre-wrap;word-break:break-word;color:var(--dsw-alias-label-primary);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:18px;margin:0;padding:8px;overflow:auto}
 .dswFiles_previewNote{position:sticky;left:0;padding:4px 8px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 .dswFiles_previewCard{padding:16px;display:flex;flex-direction:column;gap:4px}
 .dswFiles_previewCardName{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:600;word-break:break-all}
 .dswFiles_previewCardMeta{color:var(--dsw-alias-label-secondary);font-size:12.5px;line-height:18px}
-.dswFiles_previewCardHint{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:16px}
-.dswFiles_previewMarkdown{color:var(--dsw-alias-label-primary);padding:8px;font-size:16px;line-height:1.6;overflow:auto}
-.dswFiles_previewMarkdown h1,.dswFiles_previewMarkdown h2,.dswFiles_previewMarkdown h3,.dswFiles_previewMarkdown h4,.dswFiles_previewMarkdown h5,.dswFiles_previewMarkdown h6{margin-top:24px;margin-bottom:16px;font-weight:600;line-height:1.25}
-.dswFiles_previewMarkdown h1{font-size:2em;padding-bottom:.3em;border-bottom:1px solid var(--dsw-alias-border-l2)}
-.dswFiles_previewMarkdown h2{font-size:1.5em;padding-bottom:.3em;border-bottom:1px solid var(--dsw-alias-border-l2)}
-.dswFiles_previewMarkdown h3{font-size:1.25em}
-.dswFiles_previewMarkdown h4{font-size:1em}
-.dswFiles_previewMarkdown h5{font-size:.875em}
-.dswFiles_previewMarkdown h6{font-size:.85em;color:var(--dsw-alias-label-secondary)}
-.dswFiles_previewMarkdown p{margin:0 0 16px}
-.dswFiles_previewMarkdown strong{font-weight:600}
-.dswFiles_previewMarkdown code{background:var(--dsw-alias-bg-tertiary,rgba(128,128,128,.14));border-radius:6px;padding:.2em .4em;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:85%}
-.dswFiles_previewMarkdown pre{background:var(--dsw-alias-bg-tertiary,rgba(128,128,128,.14));border-radius:6px;padding:16px;overflow:auto;font-size:85%;line-height:1.45}
-.dswFiles_previewMarkdown pre code{background:0 0;padding:0;font-size:100%}
-.dswFiles_previewMarkdown ul,.dswFiles_previewMarkdown ol{margin:0 0 16px;padding-left:2em}
-.dswFiles_previewMarkdown li{margin:.25em 0}
-.dswFiles_previewMarkdown blockquote{border-left:.25em solid var(--dsw-alias-border-l2);margin:0 0 16px;padding:0 1em;color:var(--dsw-alias-label-secondary)}
-.dswFiles_previewMarkdown a{color:var(--dsw-alias-button-info-fill)}
-.dswFiles_previewMarkdown img{max-width:100%}
-.dswFiles_previewMarkdown hr{border:none;height:.25em;background:var(--dsw-alias-border-l2);margin:24px 0}
-.dswFiles_previewMarkdown table{border-spacing:0;border-collapse:collapse;margin:0 0 16px;display:block;max-width:100%;overflow:auto}
-.dswFiles_previewMarkdown th,.dswFiles_previewMarkdown td{padding:6px 13px;border:1px solid var(--dsw-alias-border-l2)}
-.dswFiles_previewMarkdown th{font-weight:600;background:var(--dsw-alias-bg-tertiary,rgba(128,128,128,.14))}
-.dswFiles_previewMarkdown tr{background:var(--dsw-alias-bg-base,transparent);border-top:1px solid var(--dsw-alias-border-l2)}
-.dswFiles_previewMarkdown li.task-list-item{list-style:none;margin-left:-1.4em}
-.dswFiles_previewMarkdown li.task-list-item input{margin:0 .35em 0 0;vertical-align:middle}
-/*Mermaid fences render as sandbox iframes (built by buildMermaidDoc); the frame styles like a code block, and the iframe's postMessage report drives its height.*/
-.dswFiles_mermaidFrame{display:block;width:100%;border:none;border-radius:6px;background:var(--dsw-alias-bg-tertiary,rgba(128,128,128,.14));margin:0 0 16px}
-/*Syntax highlighting: a fixed light/dark token palette (hex, not theme*/
-/*tokens). The dark variant keys on body[data-ds-dark-theme] — the dsh theme*/
-/*presenter's resolved setting — because a prefers-color-scheme query would*/
-/*only see the OS scheme.*/
-.dswFiles_previewMarkdown pre .hljs-comment,.dswFiles_previewText .hljs-comment,.dswFiles_previewMarkdown pre .hljs-quote{color:#6e7781}
-.dswFiles_previewMarkdown pre .hljs-keyword,.dswFiles_previewText .hljs-keyword,.dswFiles_previewMarkdown pre .hljs-doctag,.dswFiles_previewText .hljs-doctag,.dswFiles_previewMarkdown pre .hljs-formula{color:#cf222e}
-.dswFiles_previewMarkdown pre .hljs-string,.dswFiles_previewText .hljs-string,.dswFiles_previewMarkdown pre .hljs-regexp,.dswFiles_previewText .hljs-regexp,.dswFiles_previewMarkdown pre .hljs-addition,.dswFiles_previewText .hljs-addition,.dswFiles_previewMarkdown pre .hljs-attribute{color:#0a3069}
-.dswFiles_previewMarkdown pre .hljs-attr,.dswFiles_previewText .hljs-attr,.dswFiles_previewMarkdown pre .hljs-variable,.dswFiles_previewText .hljs-variable,.dswFiles_previewMarkdown pre .hljs-type,.dswFiles_previewText .hljs-type,.dswFiles_previewMarkdown pre .hljs-number{color:#953800}
-.dswFiles_previewMarkdown pre .hljs-literal{color:#0550ae}
-.dswFiles_previewMarkdown pre .hljs-title,.dswFiles_previewText .hljs-title,.dswFiles_previewMarkdown pre .hljs-symbol,.dswFiles_previewText .hljs-symbol,.dswFiles_previewMarkdown pre .hljs-bullet,.dswFiles_previewText .hljs-bullet,.dswFiles_previewMarkdown pre .hljs-link,.dswFiles_previewText .hljs-link,.dswFiles_previewMarkdown pre .hljs-meta{color:#8250df}
-.dswFiles_previewMarkdown pre .hljs-title.class_,.dswFiles_previewText .hljs-title.class_,.dswFiles_previewMarkdown pre .hljs-class_{color:#953800;font-weight:600}
-.dswFiles_previewMarkdown pre .hljs-strong{font-weight:600}
-.dswFiles_previewMarkdown pre .hljs-emphasis{font-style:italic}
-body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-comment,.dswFiles_previewText .hljs-comment,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-quote{color:#8b949e}body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-keyword,.dswFiles_previewText .hljs-keyword,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-doctag,.dswFiles_previewText .hljs-doctag,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-formula{color:#ff7b72}body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-string,.dswFiles_previewText .hljs-string,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-regexp,.dswFiles_previewText .hljs-regexp,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-addition,.dswFiles_previewText .hljs-addition,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-attribute{color:#a5d6ff}body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-attr,.dswFiles_previewText .hljs-attr,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-variable,.dswFiles_previewText .hljs-variable,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-type,.dswFiles_previewText .hljs-type,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-number{color:#ffa657}body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-literal{color:#79c0ff}body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-title,.dswFiles_previewText .hljs-title,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-symbol,.dswFiles_previewText .hljs-symbol,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-bullet,.dswFiles_previewText .hljs-bullet,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-link,.dswFiles_previewText .hljs-link,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-meta{color:#d2a8ff}body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-title.class_,.dswFiles_previewText .hljs-title.class_,body[data-ds-dark-theme] .dswFiles_previewMarkdown pre .hljs-class_{color:#ffa657}
-.dswFiles_footerBar{border-top:1px solid var(--dsw-alias-border-l3);flex-wrap:wrap;flex:none;align-items:center;gap:8px;padding:10px 16px;display:flex}
-.dswFiles_showHiddenToggle{color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;background:0 0;border:none;align-items:center;gap:4px;padding:0 2px;font-size:13px;font-weight:500;line-height:20px;display:inline-flex}
-.dswFiles_showHiddenToggle:hover{color:var(--dsw-alias-label-primary)}
-.dswFiles_showHiddenToggleActive{color:var(--dsw-alias-label-primary)}
-.dswFiles_footerGap{flex:1 1 0}
-.dswFiles_footerAction{cursor:pointer;white-space:nowrap;background:0 0;border:none;align-items:center;gap:4px;padding:0 6px;min-width:72px;font-size:13px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-secondary);display:inline-flex}
-.dswFiles_footerAction:hover{color:var(--dsw-alias-label-primary)}
-.dswFiles_footerAction:disabled{color:var(--dsw-alias-label-caption);cursor:default}
 .dswFiles_error{padding:4px 16px;font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary)}
 /*Right-edge fade: makes hidden horizontal overflow discoverable; shown only while more content lies to the right.*/
 .dswFiles_diff{position:relative;flex:1 1 0;min-height:0;overflow:auto;display:flex;flex-direction:column;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:18px}
@@ -136,9 +71,6 @@ clicking the buttons never collapses the live selection.*/
 .dswFiles_diffBinaryPane{flex:1 1 0;min-width:0;min-height:0;display:flex;flex-direction:column;gap:4px}
 .dswFiles_diffBinaryLabel{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 .dswFiles_diffBinaryNone{flex:1 1 0;display:flex;align-items:center;justify-content:center;min-height:48px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
-.dswFiles_previewHtmlWrap{display:flex;flex-direction:column;min-height:0;flex:1 1 0}
-.dswFiles_previewHtmlNote{flex:none;padding:4px 8px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
-.dswFiles_previewHtml{flex:1 1 0;min-height:0;width:100%;border:0;background:#fff}
 /*One grid for the whole file (per-row grids would misalign the rows). The*/
 /*text columns overflow their half and slide via the shared --diff-x, driven*/
 /*by the container's horizontal scrollbar, so both halves scroll in sync with*/
@@ -162,41 +94,137 @@ clicking the buttons never collapses the live selection.*/
 .dswFiles_spanAdd{background:rgba(46,160,67,.45)}
 /*Theme-aware tints where color-mix exists (the fixed rgba values are the*/
 /*fallback)*/
-@supports (background:color-mix(in srgb,red 10%,transparent)){.dswFiles_cellDelO{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 16%,transparent)}.dswFiles_cellDelN{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 7%,transparent)}.dswFiles_cellAddO{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 7%,transparent)}.dswFiles_cellAddN{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 16%,transparent)}.dswFiles_spanDel{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent)}.dswFiles_spanAdd{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent)}.dswFiles_rollupPillConflict{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 12%,transparent)}}
 .dswFiles_diffGapCell{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.10))}
 .dswFiles_diffGapTxt{padding:2px 8px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 .dswFiles_diffNN{color:var(--dsw-alias-label-tertiary)}
-.dswFiles_statusLine{flex:none;padding:2px 6px 4px}
-.dswFiles_statusHead{display:flex;align-items:center;gap:6px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary);min-width:0}
-.dswFiles_statusMarker{color:var(--dsw-alias-label-primary);font-weight:600;flex:none}
-.dswFiles_statusId{color:var(--dsw-alias-label-tertiary);flex:none;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px}
-.dswFiles_statusDesc{color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-/*Commit-review selector: a native select (no menu code), truncating long option labels.*/
-.dswFiles_statusSelect{flex:1 1 auto;min-width:0;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:14px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:4px;padding:1px 4px}
-.dswFiles_statusCount{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
-.dswFiles_badge{flex:none;width:14px;text-align:center;font-size:10.5px;font-weight:700;line-height:14px}
+/*The nav column's split panes (VCS workspace only): the change log (its own
+scroll region) on top, a movable horizontal divider, the changed-files list
+filling the rest. Non-VCS / loading / error render a single pane (no split).*/
+.dswFiles_panes{flex:1 1 0;min-height:0;display:flex;flex-direction:column}
+/*flex:none + the inline height (treeH state, written directly during the
+divider drag); 240px is the CSS default, 96px the drag's floor.*/
+.dswFiles_logPane{flex:none;height:240px;min-height:96px;display:flex;flex-direction:column;min-width:0}
+.dswFiles_logPane .dswFiles_tree{flex:1 1 0}
+/*The horizontal divider: the vertical one's row-resize analog (same
+pointer-capture pattern; the drag writes the log pane's height directly).*/
+.dswFiles_hDivider{position:relative;flex:none;height:6px;cursor:row-resize;touch-action:none;user-select:none}
+.dswFiles_hDivider::before{content:'';position:absolute;left:0;right:0;top:50%;height:1px;transform:translateY(-50%);background:var(--dsw-alias-border-l3)}
+.dswFiles_hDivider:hover::before,.dswFiles_hDivider.dswFiles_dividerActive::before{background:var(--dsw-alias-state-business-primary)}
+.dswFiles_filesPane{flex:1 1 0;min-height:96px;display:flex;flex-direction:column;min-width:0}
+.dswFiles_filesPaneHead{flex:none;padding:4px 8px 2px 2px;font-size:10.5px;line-height:14px;color:var(--dsw-alias-label-tertiary)}
+.dswFiles_filesScroll{flex:1 1 0;min-height:0;overflow:auto;scrollbar-gutter:stable;padding:0 8px 8px 0;margin-left:2px}
+/*Change tree nav — the change log pane: the working-copy
+row on top, a stack of commit rows below (newest first), each row drawing
+its jj-log-style graph lanes to the left of its text. The lanes are
+CSS-drawn (1px lines, not box-drawing glyphs — no font metrics to fight);
+the row's height is 38px (3+16+1+15+3) so the node level sits 11px down,
+where the first text line is centered. gap:0 keeps the vertical lines
+continuous across rows. --filez-lanes (set inline) indents the rows'
+content past the lane column.*/
+.dswFiles_changeTree{flex:none;margin:2px 0 4px;padding:2px 8px 2px 0;display:flex;flex-direction:column;gap:0}
+.dswFiles_changeRow{box-sizing:border-box;position:relative;flex:none;width:100%;cursor:pointer;background:0 0;border:none;border-radius:6px;padding:3px 8px 3px 0;text-align:left;display:flex}
+.dswFiles_changeRow:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dswFiles_changeRowSelected{background:var(--dsw-alias-interactive-bg-active,var(--dsw-alias-interactive-bg-hover))}
+.dswFiles_changeRow:focus-visible{outline:1px solid var(--dsw-alias-state-focus-ring,currentColor);outline-offset:-1px}
+/*The lane column: one 12px channel per lane, spanning the row's FULL height
+(absolute, so the vertical lines cross the row paddings and stay continuous
+across rows). The content column clears it.*/
+.dswFiles_rowLanes{position:absolute;top:0;bottom:0;left:0;display:flex}
+.dswFiles_rowContent{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:1px;margin-left:calc(var(--filez-lanes,0) * 12px)}
+.dswFiles_lane{position:relative;flex:none;width:12px}
+.dswFiles_laneV{position:absolute;left:50%;width:1px;margin-left:-.5px;background:var(--dsw-alias-border-l2)}
+.dswFiles_laneV.dswFiles_vT{top:0;height:11px}
+.dswFiles_laneV.dswFiles_vB{top:11px;bottom:0}
+.dswFiles_laneV.dswFiles_vT.dswFiles_vB{top:0;height:auto}
+.dswFiles_laneH{position:absolute;top:11px;height:1px;margin-top:-.5px;background:var(--dsw-alias-border-l2)}
+.dswFiles_laneH.dswFiles_hL{left:0;right:50%}
+.dswFiles_laneH.dswFiles_hR{left:50%;right:0}
+.dswFiles_laneH.dswFiles_hB{left:0;right:0}
+.dswFiles_laneNode{position:absolute;top:3px;left:0;right:0;height:16px;display:flex;align-items:center;justify-content:center;z-index:1}
+.dswFiles_changeLine{display:flex;align-items:center;gap:6px;min-width:0}
+/*Node bullet: the diamond is the working copy, the circle a commit; hollow
+= empty, the red slash an unresolved conflict (color carries health).*/
+/*Node characters (jj's own log glyphs, text): @ working copy (accent, bold
+— jj: green bold), ◆ immutable (bold — jj: bright cyan bold), × conflict
+(red, bold — jj: red bold), ○ normal (dim, like the lane lines).*/
+.dswFiles_changeGlyph{flex:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.dswFiles_changeGlyph_wc{color:var(--dsw-alias-state-business-primary);font-weight:700}
+.dswFiles_changeGlyph_immutable{color:var(--dsw-alias-label-secondary);font-weight:700}
+.dswFiles_changeGlyph_conflict{color:var(--dsw-alias-state-error-primary);font-weight:700}
+/*jj renders the id as its significant (unique) prefix, highlighted, + the
+rest in grey — the host supplies the split (shortest(8)); git rows render
+the plain short sha, unhighlighted.*/
+.dswFiles_changeId{flex:none;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dswFiles_changeIdSig{color:var(--dsw-alias-state-business-primary);font-weight:600}
+.dswFiles_changeIdRest{color:var(--dsw-alias-label-tertiary)}
+.dswFiles_changeWhen{flex:none;margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-tertiary)}
+.dswFiles_changeDesc{font-size:11.5px;line-height:15px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/*Scroll auto-load: the "loading older" note at the log's bottom edge while
+the next page fetches. It clears the lane column like a row's content and
+fades; it is a status, not a control — there is no "load less". It vanishes
+when the page lands or the log is exhausted.*/
+.dswFiles_logLoading{flex:none;margin-left:calc(var(--filez-lanes,0) * 12px);padding:4px 8px 6px;font-size:10.5px;line-height:14px;color:var(--dsw-alias-label-tertiary);animation:dswFiles_logLoadingPulse 1.2s ease-in-out infinite}
+@keyframes dswFiles_logLoadingPulse{0%,100%{opacity:.45}50%{opacity:1}}
+
+/*Bookmark (tinted fill) and tag (outlined) pills; at most 3 + a "+N" fold.*/
+.dswFiles_changePill{flex:none;max-width:90px;overflow:hidden;text-overflow:ellipsis;font-size:10.5px;line-height:14px;padding:0 5px;border-radius:999px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);user-select:none;white-space:nowrap}
+.dswFiles_changePillTag{background:0 0;border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-secondary)}
+.dswFiles_changePillMore{color:var(--dsw-alias-label-tertiary)}
+/*Pill variants: workspace names in the success tone (jj's working-copy
+label), the @remote part dim, and the sync sigils — `*` an unsynced local
+ref (warn), `??` a conflicted ref (error, bold).*/
+.dswFiles_changePillWs{color:var(--dsw-alias-state-success-primary)}
+.dswFiles_changePillRemote{color:var(--dsw-alias-label-tertiary)}
+.dswFiles_changePillSigil{color:var(--dsw-alias-state-warn-primary);font-weight:700}
+.dswFiles_changePillSigilConflict{color:var(--dsw-alias-state-error-primary)}
+/*jj's change offset: a hidden/divergent change id renders as `xyz/N`
+(N = position within the change, newest = 0) — bold, like the CLI's
+change_offset label.*/
+.dswFiles_changeIdOff{font-weight:700}
+/*The CLI's commit labels, end of line: (hidden) dim, (divergent) and
+(conflict) red (jj renders a mutable divergent commit in red).*/
+.dswFiles_changeLabel{flex:none;font-size:10.5px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+.dswFiles_changeLabelDivergent{color:var(--dsw-alias-state-error-primary)}
+.dswFiles_changeLabelConflict{color:var(--dsw-alias-state-error-primary)}
+/*The selected change's file list: the files pane's content (the pane's
+header names the selected change).*/
+/*The changed-files list wears the stock file browser's row metrics (its
+.root/.row/.name CSS): 13px/1.5 text, primary color, 5px 10px row padding,
+6px gap, 18px per nesting level — the status badge takes the stock row's
+16px icon slot, so names line up with a stock tree.*/
+.dswFiles_changeFiles{margin:0 0 4px 0;padding:0;list-style:none;flex:none;font-size:var(--dsh-content-font-size-secondary,13px);line-height:1.5}
+.dswFiles_changeFileRow{box-sizing:border-box;display:flex;align-items:center;gap:6px;min-width:0;width:100%;color:inherit;font:inherit;cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-md,5px);padding:5px 10px;text-align:left}
+.dswFiles_changeFileRow:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dswFiles_changeFileName{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dswFiles_changeFilesLoading{padding:3px 10px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.dswFiles_changeFilesEmpty{padding:3px 10px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
+/*The selected change's changed files, directory-grouped: a directory is a
+row of its own (folder icon + name, the stock file browser's row pattern —
+no disclosure chevron) that toggles its nested level; files sit at their
+exact depth. Directories are expanded by default.*/
+.dswFiles_fileItem{margin:0;padding:0}
+.dswFiles_changeDirRow{box-sizing:border-box;display:flex;align-items:center;gap:6px;min-width:0;width:100%;color:inherit;font:inherit;cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-md,5px);padding:5px 10px;text-align:left}
+.dswFiles_changeDirRow:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dswFiles_changeDirRow:focus-visible{outline:1px solid var(--dsw-alias-state-focus-ring,currentColor);outline-offset:-1px}
+.dswFiles_changeDirName{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dswFiles_changeFilesLevel{margin:0;padding:0 0 0 18px;list-style:none}
+.dswFiles_changeFileRow:focus-visible{outline:1px solid var(--dsw-alias-state-focus-ring,currentColor);outline-offset:-1px}
+.dswFiles_changeFileRowSelected,.dswFiles_changeFileRowSelected:hover{background:var(--dsw-alias-interactive-bg-active,var(--dsw-alias-interactive-bg-hover))}
+/*Non-VCS workspace: the change tree has nothing to show; the note hands the
+  user to the official file viewer.*/
+.dswFiles_noVcs{flex:none;padding:6px 8px;border:1px dashed var(--dsw-alias-border-l3);border-radius:8px;margin:6px 8px 2px;display:flex;flex-direction:column;gap:6px}
+.dswFiles_noVcsText{font-size:11.5px;line-height:15px;color:var(--dsw-alias-label-secondary)}
+.dswFiles_noVcsHint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary)}
+.dswFiles_noVcsBtn{cursor:pointer;align-self:flex-start;border:none;border-radius:6px;background:var(--dsw-alias-bg-layer-2);padding:3px 10px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-primary)}
+.dswFiles_noVcsBtn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+/*The status badge occupies the stock row's 16px icon slot, so the name
+column lines up with a stock file tree.*/
+.dswFiles_badge{flex:none;width:16px;text-align:center;font-size:10.5px;font-weight:700;line-height:14px}
 .dswFiles_badgeA{color:var(--dsw-alias-state-success-primary)}
 .dswFiles_badgeM{color:var(--dsw-alias-state-warn-primary)}
 .dswFiles_badgeD{color:var(--dsw-alias-state-error-primary)}
 .dswFiles_badgeR{color:var(--dsw-alias-state-business-primary)}
 .dswFiles_badgeC{color:var(--dsw-alias-state-error-primary)}
 .dswFiles_badgeU{color:var(--dsw-alias-state-success-primary)}
-/*Folder rollup: a count pill, error-tinted when the folder has an unresolved conflict.*/
-.dswFiles_rollupPill{box-sizing:border-box;flex:none;min-width:14px;text-align:center;font-size:10.5px;font-weight:600;line-height:14px;padding:0 5px;border-radius:999px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);user-select:none}
-.dswFiles_rollupPillConflict{color:var(--dsw-alias-state-error-primary);background:rgba(214,69,69,.12)}
 /*padding-right 0: the chevron's right edge aligns with the scroll content's right edge — it sits above the top of the scrollbar.*/
 .dswFiles_paneToggle{display:flex;gap:2px;flex:none;padding:6px 0 0 8px}
-.dswFiles_paneToggleBtn{cursor:pointer;background:0 0;border:none;border-radius:5px;padding:1px 10px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
-.dswFiles_paneToggleBtn:hover{color:var(--dsw-alias-label-primary)}
-.dswFiles_paneToggleBtnActive{background:var(--dsw-alias-interactive-bg-active,var(--dsw-alias-interactive-bg-hover));color:var(--dsw-alias-label-primary)}
-/*External section: the pinned out-of-workspace files, a fixed (flex:none) band between the tree and the pane's bottom edge — zero height while it renders nothing, self-capping (max-height + its own scroll) so a long pin set can never starve the tree.*/
-.dswFiles_extSection{flex-direction:column;flex:none;min-height:0;max-height:40%;border-top:1px solid var(--dsw-alias-border-l3);display:flex}
-.dswFiles_extHead{flex:none;align-items:center;gap:4px;padding:5px 8px 2px 10px;display:flex}
-.dswFiles_extTitle{flex:none;font-size:10.5px;line-height:16px;letter-spacing:.04em;color:var(--dsw-alias-label-tertiary);text-transform:uppercase}
-.dswFiles_extAdd{width:20px;height:20px;color:var(--dsw-alias-label-secondary);cursor:pointer;margin-left:auto;background:0 0;border:none;border-radius:5px;flex:none;justify-content:center;align-items:center;display:inline-flex}
-.dswFiles_extAdd:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
-.dswFiles_extInput{box-sizing:border-box;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;line-height:20px;color:var(--dsw-alias-label-primary);background:0 0;border:1px solid var(--dsw-alias-border-l3);border-radius:4px;padding:0 4px;flex:1;outline:none}
-.dswFiles_extInput:focus{border-color:var(--dsw-alias-state-business-primary)}
-.dswFiles_extList{margin:0 0 0 2px;padding:2px 8px 6px 0;list-style:none;min-height:0;overflow:auto;flex:1 1 auto}
-/*An External row: the basename in full ink, the directory part dimmed and clipped, the row's title carrying the whole absolute path.*/
-.dswFiles_extDir{color:var(--dsw-alias-label-tertiary);min-width:0;margin-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}

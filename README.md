@@ -1,39 +1,29 @@
-[![npm version](https://img.shields.io/npm/v/filestab)](https://www.npmjs.com/package/filestab)
+[![npm version](https://img.shields.io/npm/v/changestab)](https://www.npmjs.com/package/changestab)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-# ![filestab icon](assets/icons/filestab-icon.png) filestab
+# ![changestab icon](assets/icons/changestab-icon.png) changestab
 
 English | [中文](README.zh.md)
 
-A VCS-aware file viewer for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) — its own "Filestab" tab in the right column, alongside the built-in file browser ![DeepSeek logo](assets/icons/deepseek.png)
+Provides a sidebar Changes view for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) ![DeepSeek logo](assets/icons/deepseek.png)
 
-## Features
+Supports navigating the change history and viewing file diffs side-by-side or stacked depending on available display width.
 
-Live change tracking (jj or git) with file diffs rendered side-by-side or unified depending on pane width:
+![the change log (jj-style graph) over the selected change's files, grouped by directory, and the unified diff of a changed file](assets/changes-dark.png)
 
-![filestab file browser with per-folder change rollups, per-file status markers, and the diff of a changed file](assets/rollups-dark.png)
-
-![filestab side-by-side diff of the same changed file, the column in fullscreen](assets/diff-side-by-side.png)
-
-Markdown with task lists, syntax highlighting, and mermaid diagrams:
-
-![filestab rendering a markdown file: task lists, a highlighted TypeScript code fence, and a mermaid diagram in a sealed frame](assets/preview-markdown.png)
-
-Two clicks to start a prompt about a specific location in a file:
-
-![clicking a character in the raw view: the head row shows the exact @path:line:col token, Add ref to chat inserts the ref into the composer, the agent changes exactly that number, and the diff shows the result](assets/add-ref-to-chat.gif)
+![side-by-side diff of the same changed file, the column in fullscreen](assets/diff-side-by-side.png)
 
 ## Install
 
 ```sh
-dsh plugin --profile web add filestab
+dsh plugin --profile web add changestab
 ```
 
 Install it into the web profile, the one that runs the GUI.
 
 ## Development
 
-To test a local checkout instead of the published package, install it directly: `dsh plugin --profile web add /path/to/filestab`
+To test a local checkout instead of the published package, install it directly: `dsh plugin --profile web add /path/to/changestab`
 
 For a source checkout or local path install, run `pnpm install && npm run build` first so the bundle exists.
 
@@ -44,4 +34,4 @@ npm test         # build + the full suite (pure parser tests + real jj/git I/O w
 npm run e2e      # browser journeys against a sandboxed dsh instance
 ```
 
-[CHANGELOG.md](CHANGELOG.md) · [Releases](https://github.com/americanjeff/filestab/releases).
+[CHANGELOG.md](CHANGELOG.md) · [Releases](https://github.com/americanjeff/changestab/releases).

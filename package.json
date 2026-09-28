@@ -1,12 +1,12 @@
 {
-  "name": "filestab",
-  "version": "0.1.7",
-  "description": "Read-only, session-workspace-scoped VCS file viewer for the dsh web GUI — its own Filestab tab in the right column, alongside the built-in file browser (generic connection.rpc host channel + web client).",
+  "name": "changestab",
+  "version": "0.2.0",
+  "description": "Read-only, session-workspace-scoped VCS file viewer for the dsh web GUI — its own Changes tab in the right column, alongside the built-in file browser (change tree nav, agent action chips, Open-in-Files handoff; generic connection.rpc host channel + web client).",
   "author": "American Jeff <gitjeff@americanjeff.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/americanjeff/filestab.git"
+    "url": "git+https://github.com/americanjeff/changestab.git"
   },
   "keywords": [
     "dsh",
@@ -27,14 +27,16 @@
       "default": "./dist/index.js"
     },
     "./client": "./dist/dsh/client.js",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "locale/*.json",
     "dsh.cordis.yml"
   ],
   "scripts": {
-    "build": "node scripts/inject-css.mjs && tsc && tsc -p tsconfig.client.json && tsdown && node scripts/copy-mermaid.mjs",
+    "build": "rm -rf dist && node scripts/inject-css.mjs && node scripts/inject-icon.mjs && tsc && tsc -p tsconfig.client.json && tsdown",
     "prepack": "npm run build",
     "test": "npm run build && node test/containment.test.mjs && node test/magic.test.mjs && node test/filesystem.test.mjs && node test/host.test.mjs && node test/jj.test.mjs && node test/git.test.mjs && node test/client.test.mjs",
     "e2e": "node test/e2e/e2e.test.mjs"
@@ -57,10 +59,6 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@types/node": "^22.0.0",
     "@types/react": "~18.3.1",
-    "highlight.js": "^11.12.0",
-    "markdown-it": "^15.0.1",
-    "markdown-it-task-lists": "^2.1.1",
-    "mermaid": "^11.17.2",
     "playwright-core": "^1.62.1",
     "tsdown": "^0.22.2",
     "typescript": "^5.9.3"

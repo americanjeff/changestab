@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0] - 2026-09-28
+
+- Pivot to a changes view: the tab is now "Changes" — a jj/git change tree in the nav, each change's changed files (directory-grouped, with status badges), and diffs (side-by-side or unified by pane width), all updating live.
+- The view is read-only: changed files and diffs only, with click-to-ref and an "Open in Files" handoff to the built-in file browser — no content previews, no workspace file tree.
+- Renamed filestab → changestab (package, plugin row, tab kind); reinstall under the new name — deploy.sh's one-time migration drops the old link.
+
 ## [0.1.7] - 2026-09-24
 
 - Right column: filestab coexists with the built-in file browser. It registers its own `filestab` tab kind next to the builtin `files` page, so both guide capsules show ("Files" and "Filestab") and both page tabs can be open side by side. The built-in file browser is fully available: file opens (chat file chips, "Files changed" rows, the stock tree) route to the built-in file viewer, and filestab's selection is independent of it. Capturing those opens is a possible follow-up option (re-register the type to claim `dsh-resource://file/**` on the extension band).

@@ -1,39 +1,29 @@
-[![npm version](https://img.shields.io/npm/v/filestab)](https://www.npmjs.com/package/filestab)
+[![npm version](https://img.shields.io/npm/v/changestab)](https://www.npmjs.com/package/changestab)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-# ![filestab 图标](assets/icons/filestab-icon.png) filestab
+# ![changestab 图标](assets/icons/changestab-icon.png) changestab
 
 [English](README.md) | 中文
 
-[DeepSeek Harness](https://github.com/deepseek-ai/dsh) 的 VCS 文件查看器——右侧栏中独立的 "Filestab" 标签页，与内置文件浏览器并存 ![DeepSeek 标志](assets/icons/deepseek.png)
+为 [DeepSeek Harness](https://github.com/deepseek-ai/dsh) 提供侧边栏 Changes 视图 ![DeepSeek 标志](assets/icons/deepseek.png)
 
-## 功能
+支持导航变更历史，并根据可用显示宽度以并排或堆叠方式查看文件 diff。
 
-实时变更跟踪（jj 或 git），diff 以并排或统一视图渲染，取决于窗格宽度：
-
-![文件浏览器：按文件夹的变更汇总、文件状态标记，以及变更文件的 diff](assets/zh/rollups-dark.png)
+![变更日志（jj 风格图形）、选中变更按目录分组变更的文件，以及变更文件的统一 diff](assets/zh/changes-dark.png)
 
 ![同一变更文件的并排 diff，列处于全屏](assets/zh/diff-side-by-side.png)
-
-带任务列表、语法高亮和 mermaid 图表的 Markdown：
-
-![渲染后的 Markdown：任务列表、高亮的 TypeScript 代码块，以及密封框架中的 mermaid 图表](assets/zh/preview-markdown.png)
-
-两次点击，即可针对文件中的某个具体位置发起提问：
-
-![在原始视图中点击一个字符：头部行显示精确的 @path:line:col 引用，Add ref to chat 将其插入输入框，agent 恰好修改了那个数字，diff 显示结果](assets/add-ref-to-chat.gif)
 
 ## 安装
 
 ```sh
-dsh plugin --profile web add filestab
+dsh plugin --profile web add changestab
 ```
 
 请安装到 web profile，即运行 GUI 的那个 profile。
 
 ## 开发
 
-要测试本地检出（而非已发布的包），可以直接安装：`dsh plugin --profile web add /path/to/filestab`
+要测试本地检出（而非已发布的包），可以直接安装：`dsh plugin --profile web add /path/to/changestab`
 
 源码检出或本地路径安装请先运行 `pnpm install && npm run build` 生成 bundle。
 
@@ -44,4 +34,4 @@ npm test         # 构建 + 完整测试套件（纯解析器测试 + jj/git 在
 npm run e2e      # 针对沙盒 dsh 实例的浏览器旅程
 ```
 
-[CHANGELOG.md](CHANGELOG.md) · [Releases](https://github.com/americanjeff/filestab/releases)。
+[CHANGELOG.md](CHANGELOG.md) · [Releases](https://github.com/americanjeff/changestab/releases)。

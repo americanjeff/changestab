@@ -5,26 +5,20 @@
 // "What it looks like" states. Runs the full pass twice:
 //   EN (locale en-US) -> assets/<name>.png
 //   ZH (locale zh-CN) -> assets/zh/<name>.png
-// The dsh GUI and the filestab UI both follow the browser locale, so the ZH
+// The dsh GUI and the changestab UI both follow the browser locale, so the ZH
 // pass captures the same scenes in the Chinese UI.
 //
-// dsh 0.1.5: the Files surface is the RIGHT COLUMN (the conversation Files
-// tab is gone). A session only gets its right sidebar once a turn exists, so
-// each pass sends one "hello" (one real model call) and then opens the column
-// via button[data-sidebar-right-expand]; the column's sole guide entry seeds
-// the files page (.dswFiles_root) directly. Tree rows are button.dswFiles_row
-// with a .dswFiles_name (folders carry aria-expanded); there is no crumb bar.
+// 0.2.0 surface (the pivot): the nav is a change tree whose
+// selected change lists its CHANGED FILES, directory-grouped (expanded by
+// default); the preview pane shows DIFFS ONLY. The old listing/preview
+// modes are gone with them.
 //
 // Captures per pass (dark theme via colorScheme):
-//   rollups-dark.png      worktree listing (rollups + M/A badges) with the
-//                         unified diff of a changed file (narrow pane)
-//   history-dropdown.png  commit selected in the dropdown, snapshot tree,
-//                         binary diff card
-//   preview-markdown.png  rendered markdown: task lists, highlighted fence,
-//                         mermaid in a sealed frame
-//   preview-source.png    syntax-highlighted source
-//   external-section.png  the External band: a file OUTSIDE the workspace,
-//                         pinned by absolute path, selected and previewing
+//   changes-dark.png      the split nav: the change log (worktree + commits
+//                         with the jj-style graph lanes, over the movable
+//                         divider) and the worktree's grouped changed files
+//                         (the examples/ dir first, M/A badges), beside the
+//                         UNIFIED diff of README.md (narrow pane)
 //   diff-side-by-side.png the README.md diff in split mode, LAST — the
 //                         column in dsh fullscreen at an 1800px viewport
 //                         (the fixed 630px column is below the 66%-per-side
@@ -36,7 +30,7 @@
 // Full-page backups land in test/e2e/out/shots/<pass>/ for review.
 //
 // Prereqs: dsh on PATH at the version the e2e was written against, a
-// playwright chromium, ImageMagick (logo.png), filestab dist/ built.
+// playwright chromium, changestab dist/ built.
 // Run: node scripts/capture-readme-shots.mjs
 
 import { execFileSync, spawn } from "node:child_process";
@@ -56,20 +50,13 @@ const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
 
-// One jj workspace with five described commits plus a dirty worktree, so the
-// commit dropdown shows the worktree row and five commits, and the root
-// listing shows folder rollups (examples: 3), per-file badges (M, A), and a
-// diffable changed file (README.md).
+// One jj workspace with two described commits plus a dirty worktree, so the
+// change tree shows the worktree row and two commits, and the worktree's
+// changed-file list shows a dir group (examples/), a modified root file
+// (README.md, the diff hero), and an addition (scratch.txt).
 //
 // NOTE on jj semantics: `jj new -m X` commits the files written SINCE the
-// previous `jj new` into a NEW change described X. So each description below
-// is given to the change that receives the NEXT batch of files:
-//   "initial import" <- README.md + img/logo.png
-//   "add docs"       <- docs/notes.md
-//   "add app"        <- app/main.py + app/util.py
-//   "add logo"       <- (none; logo.png already committed in "initial import")
-//   "add page"       <- site/index.html
-//   worktree         <- dirty: README.md (M), scratch.txt (A), examples/ (3 A)
+// previous `jj new` into a NEW change described X.
 function makeFixture(root) {
   const fx = join(root, "fj");
   mkdirSync(fx, { recursive: true });
@@ -84,43 +71,12 @@ function makeFixture(root) {
   execFileSync("jj", ["git", "init"], { cwd: fx, stdio: "ignore" });
   jj("describe", "-m", "initial import");
 
-  // The demo image: a 480x300 gradient card (the binary-diff card in history).
-  const logo = join(fx, "img", "logo.png");
-  mkdirSync(dirname(logo), { recursive: true });
-  execFileSync("magick", [
-    "-size", "480x300", "gradient:#0f172a-#334155",
-    "-fill", "#38bdf8", "-pointsize", "52", "-gravity", "center",
-    "-annotate", "+0-12", "filestab",
-    "-fill", "#94a3b8", "-pointsize", "18",
-    "-annotate", "+0+30", "inline image preview",
-    logo,
-  ], { stdio: "ignore" });
-
   // Committed v1 of the demo file: the working copy modifies line 3 and
   // appends a block, so the hero diff shows both a changed pair and an
   // added run, and is tall enough for a tight crop to clip it mid-way.
   write("README.md",
-    "# filestab\n\n" +
+    "# changestab\n\n" +
     "A read-only Files tab for the dsh web GUI.\n");
-  jj("new", "-m", "add docs");
-
-  // Sized so heading + task list + code fence + mermaid diagram all fit in
-  // one pane capture (the pane scrolls; the README shot must show all four).
-  write("docs/notes.md",
-    "# Release notes\n\n" +
-    "## Tasks\n\n" +
-    "- [x] Build the file browser\n" +
-    "- [x] Wire up jj and git change tracking\n" +
-    "- [ ] Ship the sealed HTML preview\n\n" +
-    "## Snippet\n\n" +
-    "```ts\n" +
-    "export const statusLine = (cs) => cs.map((c) => c.kind).join(\", \");\n" +
-    "```\n\n" +
-    "## Flow\n\n" +
-    "```mermaid\n" +
-    "flowchart LR\n" +
-    "  Browse --> Select --> Preview\n" +
-    "```\n");
   jj("new", "-m", "add app");
 
   write("app/main.py",
@@ -146,46 +102,20 @@ function makeFixture(root) {
     "            yield \"    \" * depth + entry.name + \"/\"\n" +
     "            yield from walk(entry, depth + 1)\n" +
     "        else:\n" +
-    "            yield \"    \" * depth + entry.name\n");
-  jj("new", "-m", "add page");
-
-  write("site/index.html",
-    "<!doctype html>\n" +
-    "<html>\n" +
-    "<head>\n" +
-    "<meta charset=\"utf-8\">\n" +
-    "<title>demo</title>\n" +
-    "<style>\n" +
-    "  body { font-family: system-ui, sans-serif; margin: 0;\n" +
-    "         display: grid; place-items: center; min-height: 90vh;\n" +
-    "         background: #0f172a; color: #e2e8f0; }\n" +
-    "  .card { background: #1e293b; border: 1px solid #334155;\n" +
-    "          border-radius: 12px; padding: 28px 40px; text-align: center; }\n" +
-    "  h1 { font-size: 20px; margin: 0 0 8px; color: #38bdf8; }\n" +
-    "  p { margin: 0; font-size: 13px; color: #94a3b8; }\n" +
-    "</style>\n" +
-    "</head>\n" +
-    "<body>\n" +
-    "  <div class=\"card\">\n" +
-    "    <h1>Sealed render</h1>\n" +
-    "    <p>This page runs inside a sandboxed, opaque-origin frame.</p>\n" +
-    "  </div>\n" +
-    "</body>\n" +
-    "</html>\n");
+    "            yield \"    \" * depth + entry.name + \"\\n\"\n");
   jj("new", "-m", "working copy");
 
   // Dirty worktree: a modified root file (the diff shot), an added scratch
-  // file, and a folder of three additions (the rollup shot).
+  // file, and a folder of three additions (the dir-group shot).
   write("README.md",
-    "# filestab\n\n" +
-    "A read-only Files tab, built for dsh.\n\n" +
+    "# changestab\n\n" +
+    "A read-only Changes tab, built for dsh.\n\n" +
     "Track jj and git changes live, review any\n" +
-    "commit, and preview files inline:\n\n" +
-    "- Markdown with task lists and mermaid\n" +
-    "- syntax-highlighted source\n" +
-    "- images and PDFs\n" +
-    "- HTML in a sealed sandbox\n" +
-    "- side-by-side diffs with rollups\n\n" +
+    "commit, and read the diffs:\n\n" +
+    "- a change tree\n" +
+    "- changed files, grouped by directory\n" +
+    "- side-by-side or unified diffs\n" +
+    "- ref tokens the coding agent can act on\n\n" +
     "## Safety\n\n" +
     "Read-only: the host half never writes\n" +
     "to the workspace.\n");
@@ -272,13 +202,15 @@ function findChrome() {
   throw new Error("no chromium found: run `npx playwright install chromium` or set E2E_CHROME");
 }
 
-// dsh's own UI labels per locale (the filestab UI localizes on its own).
+// dsh's own UI labels per locale (the changestab UI localizes on its own).
+// tabLabel: the tab's title stays the English "Changes" in BOTH locales
+// (the built-in dictionary does not translate view.changestab).
 const LABELS = {
-  en: { locale: "en-US", addWs: "Add workspace", open: "Open", send: "Send message", openFile: "Open file…" },
-  zh: { locale: "zh-CN", addWs: "添加工作区", open: "打开", send: "发送消息", openFile: "打开文件…" },
+  en: { locale: "en-US", addWs: "Add workspace", open: "Open", send: "Send message", tabLabel: "Changes" },
+  zh: { locale: "zh-CN", addWs: "添加工作区", open: "打开", send: "发送消息", tabLabel: "Changes" },
 };
 
-// Open a session AND reveal the filestab (the right column). A fresh session
+// Open a session AND reveal the changestab (the right column). A fresh session
 // has no turns, so the right sidebar (and its expand button) does not exist
 // yet: send one "hello" (the single real model call per pass), wait for the
 // expand button, open the column, and wait for the seeded files page.
@@ -318,8 +250,18 @@ async function openSession(browser, { url, workspace, lang, viewport = { width: 
     // The expand button appears only once a turn exists.
     const expand = page.locator("button[data-sidebar-right-expand]");
     await expand.waitFor({ state: "visible", timeout: 120_000 });
-    // Open the right column; its sole guide entry seeds the files page.
     await expand.click();
+    // Open the Changes page: the guide capsule (the pane seeds on the guide
+    // page) or the dockkit page tab if a tab is already open.
+    const cap = page.locator('[data-sidebar-right-guide-entry="changestab"]');
+    if (await cap.count()) {
+      await cap.first().click();
+    } else {
+      const tab = page.locator('[data-dockkit-tab]', {
+        has: page.locator('[data-dockkit-tab-title]', { hasText: new RegExp(`^${L.tabLabel}$`) }),
+      });
+      if (await tab.count()) await tab.first().click();
+    }
     await page.locator(".dswFiles_root").waitFor({ state: "visible", timeout: 20_000 });
   } catch (e) {
     await context.close().catch(() => {});
@@ -330,13 +272,10 @@ async function openSession(browser, { url, workspace, lang, viewport = { width: 
 
 function ui(page) {
   const root = () => page.locator(".dswFiles_root");
-  // Tree rows only (the External band's rows live in .dswFiles_extList,
-  // outside .dswFiles_tree, so this excludes them).
-  const tree = () => root().locator(".dswFiles_tree");
-  const rowNames = () => tree().locator(".dswFiles_name").allTextContents();
-  const row = (name) => tree().locator("button.dswFiles_row", {
-    has: page.locator(".dswFiles_name", { hasText: new RegExp(`^${escapeRegExp(name)}$`) }),
-  }).first();
+  const tree = () => root().locator(".dswFiles_changeTree");
+  // The selected change's changed-file list (0.2.0): file leaves are
+  // li[data-files-change-file] — the only rows the view renders.
+  const fileRow = (path) => root().locator(`li[data-files-change-file="${path}"] .dswFiles_changeFileRow`);
   const until = async (fn, what, ms = 20_000) => {
     const t0 = Date.now();
     for (;;) {
@@ -345,7 +284,7 @@ function ui(page) {
       await page.waitForTimeout(250);
     }
   };
-  return { page, root, tree, rowNames, row, until };
+  return { page, root, tree, fileRow, until };
 }
 
 // ── capture ──────────────────────────────────────────────────────────────────
@@ -364,10 +303,11 @@ async function shot(u, name, outDir, pass, opts = {}) {
     const rootBox = await u.root().boundingBox();
     // Both containers are flex children stretched to the pane, so their own
     // boxes reach the pane bottom — the content bottom is the last ROW's
-    // (the grid's last cell, the tree's last row).
+    // (the grid's last cell, the tree's last row, the file list's last row
+    // in the split files pane).
     const bottoms = await u.page.evaluate(() => {
       const out = [];
-      for (const sel of [".dswFiles_diffGrid", ".dswFiles_tree"]) {
+      for (const sel of [".dswFiles_diffGrid", ".dswFiles_tree", ".dswFiles_changeFiles", ".dswFiles_filesPaneHead"]) {
         const n = document.querySelector(sel);
         const last = n && n.lastElementChild;
         if (last) out.push(last.getBoundingClientRect().bottom);
@@ -384,104 +324,27 @@ async function shot(u, name, outDir, pass, opts = {}) {
   console.log(`capture (${pass}): ${name}`);
 }
 
-// Navigate to a file by path (list of segments) and select it. Idempotent
-// about folder expansion (a rev switch may or may not reset the tree): a
-// folder segment is clicked only to expand it, an already-expanded one is
-// left alone, and the final segment (the file) is clicked to select it.
-async function openFile(u, segments) {
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    const isLast = i === segments.length - 1;
-    await u.until(async () => (await u.rowNames()).includes(seg), `row "${seg}" visible`);
-    const r = u.row(seg);
-    if (isLast) {
-      await r.click(); // the file: select it
-    } else {
-      const expanded = await r.getAttribute("aria-expanded");
-      if (expanded !== "true") {
-        await r.click(); // a folder: expand it
-        await u.page.waitForTimeout(300);
-      }
-    }
-  }
-}
-
-async function captureAll(browser, url, fx, outside, { lang, outDir, pass }) {
-  const L = LABELS[lang];
+async function captureAll(browser, url, fx, { lang, outDir, pass }) {
   const { context, page } = await openSession(browser, { url, workspace: fx, lang });
   const u = ui(page);
-  const sel = u.root().locator(".dswFiles_statusSelect");
-  await u.until(async () => (await sel.count()) > 0, "jj status line");
+  await u.until(async () => (await u.tree().count()) > 0, "change tree");
 
-  // 1. rollups: root listing with badges/rollups + the side-by-side diff of
-  //    README.md (M).
-  await u.row("README.md").click();
+  // 1. changes-dark: the change tree (worktree + the two commits) with the
+  //    worktree's grouped changed files (examples/ first, M/A badges) and
+  //    the UNIFIED diff of README.md (M) in the narrow column.
+  await u.fileRow("README.md").click();
   // The diff grid is the render signal: the sticky head (dswFiles_diffHead)
-  // now carries only the diff meta and is absent for a plain modification,
-  // while the file's name lives in the pane header (dswFiles_paneHead).
+  // carries only the diff meta and is absent for a plain modification,
+  // while the file's name lives in the pane head row (dswFiles_paneHead).
   await u.until(async () => (await u.root().locator(".dswFiles_diffGrid").count()) > 0, "diff rendered");
   await u.page.waitForTimeout(600);
-  // Crop the empty column tail: the figure is the listing + the diff, and
-  // the rest of the column is dead space. In the narrow column (320px pane)
+  // Crop the empty column tail: the figure is the tree + the diff, and the
+  // rest of the column is dead space. In the narrow column (320px pane)
   // the diff is UNIFIED — the 320px pane can't fit 66 of the 100 reference
   // columns per split side.
-  await shot(u, "rollups-dark.png", outDir, pass, { cropBottom: true });
+  await shot(u, "changes-dark.png", outDir, pass, { cropBottom: true });
 
-  // 2. history-dropdown: pick "initial import" (tree = README.md + img/),
-  //    open img/logo.png (the binary diff card).
-  const opts = await sel.evaluate((s) => Array.from(s.options).map((o) => [o.value, o.textContent]));
-  console.log(`dropdown options (${pass}):\n` + opts.map(([v, t]) => `  ${v}  ${t}`).join("\n"));
-  const initOpt = opts.find(([, t]) => (t || "").includes("initial import"));
-  if (!initOpt) throw new Error("no 'initial import' option in the dropdown");
-  await sel.selectOption(initOpt[0]);
-  await u.until(async () => (await u.rowNames()).includes("img"), "snapshot tree listed");
-  await u.until(async () => !(await u.rowNames()).includes("site"), "site/ gone in this commit");
-  await openFile(u, ["img", "logo.png"]);
-  await u.until(async () =>
-    (await u.root().locator(".dswFiles_diffBinaryRow").count()) > 0 ||
-    ((await u.root().locator(".dswFiles_previewPane").innerText().catch(() => "")) ?? "").toLowerCase().includes("binary"),
-    "binary card rendered");
-  await u.page.waitForTimeout(600);
-  await shot(u, "history-dropdown.png", outDir, pass);
-
-  // Back to the worktree for the preview shots.
-  await sel.selectOption("worktree");
-  await u.until(async () => (await u.rowNames()).includes("scratch.txt"), "worktree tree restored");
-
-  // 3. preview-markdown: docs/notes.md renders by default (clean markdown).
-  await openFile(u, ["docs", "notes.md"]);
-  const md = u.root().locator(".dswFiles_previewMarkdown");
-  await u.until(async () => (await md.count()) > 0 && (await md.locator("h1").count()) > 0, "markdown rendered");
-  await u.until(async () => {
-    const frame = u.root().locator(".dswFiles_mermaidFrame");
-    if (await frame.count() === 0) return false;
-    const f = frame.first().contentFrame();
-    return f ? (await f.locator("svg").count().catch(() => 0)) > 0 : false;
-  }, "mermaid SVG inside the sealed frame", 30_000);
-  await u.page.waitForTimeout(600);
-  await shot(u, "preview-markdown.png", outDir, pass);
-
-  // 4. preview-source: app/util.py, highlighted (view mode default).
-  await openFile(u, ["app", "util.py"]);
-  const pre = u.root().locator(".dswFiles_previewText");
-  await u.until(async () => (await pre.count()) > 0 && (await pre.locator(".hljs-keyword").count()) > 0, "highlighted source");
-  await u.page.waitForTimeout(300);
-  await shot(u, "preview-source.png", outDir, pass);
-
-  // 5. external-section: pin a file OUTSIDE the workspace by absolute path
-  //    (the footer's "Open file…"); it lands in the External band, is
-  //    selected, and previews in the same pane.
-  await page.getByRole("button", { name: L.openFile }).click();
-  const extInput = u.root().locator(".dswFiles_extInput");
-  await extInput.waitFor({ state: "visible", timeout: 10_000 });
-  await extInput.fill(outside);
-  await extInput.press("Enter");
-  await u.until(async () => (await u.root().locator(".dswFiles_extList button.dswFiles_row").count()) > 0, "external row pinned");
-  await u.until(async () => (await u.root().locator(".dswFiles_previewMarkdown").count()) > 0, "external markdown preview");
-  await u.page.waitForTimeout(600);
-  await shot(u, "external-section.png", outDir, pass);
-
-  // 6. diff-side-by-side: the README.md diff (M) in split mode — taken LAST.
+  // 2. diff-side-by-side: the README.md diff (M) in split mode — taken LAST.
   //    The fixed 630px column is BELOW the split cutoff (a split side must
   //    fit 66% of the 100 reference columns — pane ≈1078px), so the column
   //    goes to dsh FULLSCREEN for this shot. The 1400px viewport's
@@ -489,19 +352,15 @@ async function captureAll(browser, url, fx, outside, { lang, outDir, pass }) {
   //    viewport is widened to 1800 for the shot and restored after (the
   //    column stays a fixed 630px — probed — so only this shot is
   //    affected). The chrome button's aria-label is localized, but its
-  //    data attribute is not (probed: data-sidebar-right-mode).
-    //    LAST because of the 1800px viewport dance (a later narrower shot
-  //    would capture the reflow) and because the exit click parks
-  //    headless's virtual mouse on the host's fullscreen button — a
-  //    hover-expanded affordance (small icon -> "Fullscreen" label pill)
-  //    that stays hover-stuck without a real pointer, leaving the pill
-  //    over the nav header's path-edit/reload/hide controls in every
-  //    later shot. Manual usage is unaffected (user-confirmed); the
-  //    mouse.move after the exit loop resets the hover state anyway.
-  // The external pin left the pane on outside-notes.md (preview mode);
-  // re-select README.md so the diff grid renders again for the split shot.
-  await u.row("README.md").click();
-  await u.until(async () => (await u.root().locator(".dswFiles_diffGrid").count()) > 0, "diff rendered");
+  //    data attribute is not (probed: data-sidebar-right-mode). LAST
+  //    because of the 1800px viewport dance (a later narrower shot would
+  //    capture the reflow) and because the exit click parks headless's
+  //    virtual mouse on the host's fullscreen button — a hover-expanded
+  //    affordance (small icon -> "Fullscreen" label pill) that stays
+  //    hover-stuck without a real pointer, leaving the pill over the nav
+  //    header's path-edit/reload/hide controls in every later shot. Manual
+  //    usage is unaffected (user-confirmed); the mouse.move after the exit
+  //    loop resets the hover state anyway.
   await u.page.setViewportSize({ width: 1800, height: 900 });
   const fsBtn = u.page.locator('button[data-sidebar-right-mode="fullscreen"]');
   await fsBtn.first().click();
@@ -536,29 +395,20 @@ async function captureAll(browser, url, fx, outside, { lang, outDir, pass }) {
 }
 
 async function main() {
-  const root = join(tmpdir(), `filestab-shots-${randomBytes(4).toString("hex")}`);
+  const root = join(tmpdir(), `changestab-shots-${randomBytes(4).toString("hex")}`);
   mkdirSync(root, { recursive: true });
   let dsh = null, browser = null;
   try {
     const home = makeScratchHome(root);
     const fx = makeFixture(root);
-    // The External-section fixture: a markdown file OUTSIDE the jj workspace;
-    // the host reads it by absolute path through fileshow-abs.
-    const outside = join(root, "outside-notes.md");
-    writeFileSync(outside,
-      "# Outside the workspace\n\n" +
-      "This file lives outside the session's workspace,\n" +
-      "pinned into the External section by absolute path:\n\n" +
-      "- reconstructed from a dropped leading slash\n" +
-      "- read through the `fileshow-abs` endpoint\n");
     console.log(`fixture: ${fx}`);
     dsh = await bootDsh(home);
     const url = dsh.url;
     console.log(`dsh web on ${url}`);
     browser = await chromium.launch({ executablePath: findChrome(), headless: true, args: ["--no-sandbox"] });
 
-    await captureAll(browser, url, fx, outside, { lang: "en", outDir: join(REPO_ROOT, "assets"), pass: "en" });
-    await captureAll(browser, url, fx, outside, { lang: "zh", outDir: join(REPO_ROOT, "assets", "zh"), pass: "zh" });
+    await captureAll(browser, url, fx, { lang: "en", outDir: join(REPO_ROOT, "assets"), pass: "en" });
+    await captureAll(browser, url, fx, { lang: "zh", outDir: join(REPO_ROOT, "assets", "zh"), pass: "zh" });
   } catch (e) {
     const pages = browser ? [...browser.contexts().flatMap((c) => c.pages())] : [];
     for (const p of pages) {
@@ -583,4 +433,4 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 // is a deprecated no-op: 0.1.5 has no conversation Files tab — openSession
 // reveals the right column directly.
 async function clickFilesTab() { return; }
-export { makeFixture, makeScratchHome, bootDsh, findChrome, openSession, ui, openFile, clickFilesTab };
+export { makeFixture, makeScratchHome, bootDsh, findChrome, openSession, ui, clickFilesTab };

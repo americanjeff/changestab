@@ -1,7 +1,7 @@
 // scripts/hero-dogfood-experiments.mjs — candidate FIRST-shot (hero) shots.
 //
 // Same sandboxed dsh boot as capture-readme-shots.mjs, but the session's
-// workspace is this repo itself: filestab browsing its own working copy.
+// workspace is this repo itself: changestab browsing its own working copy.
 // Selects the modified capture script (a real JS diff: a changed pair, an
 // added block, and a "… N-M …" skip marker between hunks), drags the file
 // listing narrower, then captures candidates with different zoom, viewport,
@@ -113,7 +113,7 @@ async function captureVariant(page, v, outDir = OUT) {
 }
 
 async function main() {
-  const root = join(tmpdir(), `filestab-hero-dog-${randomBytes(4).toString("hex")}`);
+  const root = join(tmpdir(), `changestab-hero-dog-${randomBytes(4).toString("hex")}`);
   mkdirSync(root, { recursive: true });
   rmSync(OUT, { recursive: true, force: true });
   mkdirSync(OUT, { recursive: true });

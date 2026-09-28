@@ -11,13 +11,3 @@
 // - Installed @types packages and the local structural interfaces in
 //   client.tsx type the rest of the client's surface (react, the cordis ctx).
 //
-// The one exception: markdown-it-task-lists ships no type definitions. The
-// build is strict. This file declares its plugin signature.
-declare module "markdown-it-task-lists" {
-  import type MarkdownIt from "markdown-it";
-  const plugin: (
-    md: MarkdownIt,
-    options?: { enabled?: boolean; label?: boolean; labelAfter?: boolean }
-  ) => void;
-  export default plugin;
-}

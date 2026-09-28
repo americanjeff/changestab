@@ -12,23 +12,11 @@ await mkdir(join(ws, "sub"), { recursive: true });
 await mkdir(outside, { recursive: true });
 await writeFile(join(ws, "a.txt"), "hello");
 await writeFile(join(ws, "note.md"), "# hi\n");
-// fileshow-abs fixtures, OUTSIDE the workspace (its whole point): the text
-// file plus a markdown file for the classification check.
-await writeFile(join(outside, "notes.md"), "# outside\n\nabs path read\n");
 await writeFile(join(ws, "pic.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 await writeFile(join(ws, "sub", "b.txt"), "world");
-await writeFile(join(outside, "secret.txt"), "top secret");
+// The outside directory exists for the symlink below (the list test reads the
+// link's own stat) and the containment checks.
 await symlink(outside, join(ws, "link"));
-// fileshow edge-case fixtures, INSIDE the workspace (fileshow is
-// workspace-scoped): type-sniffing cases (magic overriding a wrong extension,
-// recognized signatures, no-signature fallback) plus an over-cap text file for
-// the truncation path.
-await mkdir(join(ws, "sniff"), { recursive: true });
-await writeFile(join(ws, "sniff", "photo.dat"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-await writeFile(join(ws, "sniff", "doc.pdf"), "%PDF-1.4\n1 0 obj\n");
-await writeFile(join(ws, "sniff", "bundle.zip"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0]));
-await writeFile(join(ws, "sniff", "mystery.bin"), Buffer.from([0x00, 0x01, 0x02, 0x03, 0xff, 0xfe]));
-await writeFile(join(ws, "sniff", "big.txt"), "x".repeat(1_572_864)); // 1.5 MB of text → capped read
 
 const SESSION_ID = "sess-1";
 // A persisted-but-NOT-LIVE session (a finished turn or a restarted runtime
@@ -123,7 +111,7 @@ const call = async (endpoint, payload, rpcId = "rpc-" + Math.random().toString(1
 
 { const r = await call("list", { sessionId: SESSION_ID, relPath: "" });
   assert.ok(r.ok, "list root ok: " + JSON.stringify(r));
-  assert.deepStrictEqual(r.value.entries.map((e) => e.name), ["sniff", "sub", "a.txt", "link", "note.md", "pic.png"], "root entries (dirs first, then name): " + JSON.stringify(r.value.entries));
+  assert.deepStrictEqual(r.value.entries.map((e) => e.name), ["sub", "a.txt", "link", "note.md", "pic.png"], "root entries (dirs first, then name): " + JSON.stringify(r.value.entries));
   assert.strictEqual(r.value.root, ws, "root echoed"); n++; }
 // BUG-008: the lstat pass — size + mtime ride each entry on the wire (a
 // symlink entry carries its OWN link stat).
@@ -157,8 +145,6 @@ const call = async (endpoint, payload, rpcId = "rpc-" + Math.random().toString(1
   assert.deepStrictEqual(r.value.entries.map((e) => e.name), ["cold.txt"], "cold entries"); n++; }
 { const r = await call("list", { sessionId: COLD_ID, relPath: "../outside" });
   assert.ok(!r.ok && r.error.code === "workspace-invalid-path", "cold root containment: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow", { sessionId: COLD_ID, relPath: "cold.txt", rev: "worktree" });
-  assert.ok(r.ok && r.value.kind === "text" && r.value.text === "cold hello", "cold fileshow: " + JSON.stringify(r)); n++; }
 // The resolved cold root is cached (the header cwd is immutable): one
 // inspect per session id, not one per poll.
 { const before = inspectCalls;
@@ -197,82 +183,20 @@ const call = async (endpoint, payload, rpcId = "rpc-" + Math.random().toString(1
 { const r = await call("bogus", { sessionId: SESSION_ID });
   assert.ok(!r.ok && r.error.code === "bad-request" && Array.isArray(r.error.details.issues), "unknown endpoint → bad-request + issues: " + JSON.stringify(r)); n++; }
 
-// The in-pane preview's single transport: containment-checked, capped at
-// 1 MB, type sniffed (magic over extension), displayable binaries under the
-// cap carry base64 `data`.
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "a.txt", rev: "worktree" });
-  assert.ok(r.ok, "worktree text ok: " + JSON.stringify(r));
-  assert.strictEqual(r.value.kind, "text", "text kind");
-  assert.strictEqual(r.value.text, "hello", "text content");
-  assert.strictEqual(r.value.size, 5, "size = file size");
-  assert.strictEqual(r.value.truncated, false, "not truncated");
-  assert.strictEqual(r.value.type, "application/octet-stream", "plain ext falls to octet-stream (no magic signature)");
-  assert.strictEqual(r.value.label, "binary", "octet-stream label (unshown for text kind)"); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "note.md", rev: "worktree" });
-  assert.ok(r.ok && r.value.kind === "text" && r.value.type === "text/markdown", "md worktree: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "pic.png", rev: "worktree" });
-  assert.ok(r.ok, "png worktree ok: " + JSON.stringify(r));
-  assert.strictEqual(r.value.kind, "binary", "binary kind");
-  assert.strictEqual(r.value.type, "image/png", "PNG magic (same result as the extension, sniffed)");
-  assert.strictEqual(r.value.label, "PNG image", "sniffed label");
-  assert.ok(typeof r.value.data === "string" && r.value.data.length > 0, "under-cap displayable binary carries base64 data"); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "sniff/photo.dat", rev: "worktree" });
-  assert.ok(r.ok && r.value.kind === "binary" && r.value.type === "image/png", "PNG magic overrides .dat: " + JSON.stringify(r));
-  assert.strictEqual(r.value.label, "PNG image", "mislabel → sniffed label"); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "sniff/doc.pdf", rev: "worktree" });
-  assert.ok(r.ok && r.value.type === "application/pdf", "pdf sniff: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "sniff/bundle.zip", rev: "worktree" });
-  assert.ok(r.ok && r.value.type === "application/zip", "zip sniff: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "sniff/mystery.bin", rev: "worktree" });
-  assert.ok(r.ok, "mystery ok: " + JSON.stringify(r));
-  assert.strictEqual(r.value.kind, "binary", "NUL byte → binary kind");
-  assert.strictEqual(r.value.type, "application/octet-stream", "no signature → extension fallback");
-  assert.strictEqual(r.value.label, "binary", "unknown → binary label");
-  assert.strictEqual(r.value.data, undefined, "non-displayable binary carries no data"); n++; }
-// over-cap text: the read is capped but size stays the TRUE file size
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "sniff/big.txt", rev: "worktree" });
-  assert.ok(r.ok, "big file ok: " + JSON.stringify(r));
-  assert.strictEqual(r.value.kind, "text", "big text kind");
-  assert.strictEqual(r.value.text.length, 1_000_000, "text capped at 1 MB");
-  assert.strictEqual(r.value.size, 1_572_864, "size = true file size, not the capped read");
-  assert.strictEqual(r.value.truncated, true, "truncated flag set"); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "nope.txt", rev: "worktree" });
-  assert.ok(!r.ok && /not-found/.test(r.error.message), "missing → not-found: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "sub", rev: "worktree" });
-  assert.ok(!r.ok && /not-a-file/.test(r.error.message), "directory → not-a-file: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "../outside/secret.txt", rev: "worktree" });
-  assert.ok(!r.ok && r.error.code === "workspace-invalid-path", ".. escape → workspace-invalid-path: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "/etc/passwd", rev: "worktree" });
-  assert.ok(!r.ok && r.error.code === "workspace-invalid-path", "absolute → workspace-invalid-path: " + JSON.stringify(r)); n++; }
-// rev validation: only "worktree" or a change/commit id
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "a.txt", rev: "commit" });
-  assert.ok(!r.ok && r.error.code === "bad-request", "'commit' is not a fileshow rev: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow", { sessionId: SESSION_ID, relPath: "a.txt" });
-  assert.ok(!r.ok && r.error.code === "bad-request", "missing rev → bad-request: " + JSON.stringify(r)); n++; }
-// fileshow-abs: a LIVE file by ABSOLUTE path, the External section's read.
-// The session is the scope (it must resolve); the path is the caller's and
-// is NOT containment-checked — reading outside the workspace is the point.
-{ const r = await call("fileshow-abs", { sessionId: SESSION_ID, path: join(outside, "secret.txt") });
-  assert.ok(r.ok && r.value.kind === "text" && r.value.text === "top secret", "outside file reads by absolute path: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow-abs", { sessionId: SESSION_ID, path: join(outside, "notes.md") });
-  assert.ok(r.ok && r.value.kind === "text" && r.value.type === "text/markdown", "outside markdown classifies: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow-abs", { sessionId: SESSION_ID, path: join(ws, "a.txt") });
-  assert.ok(r.ok && r.value.kind === "text" && r.value.text === "hello", "an inside file reads too (no containment either way): " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow-abs", { sessionId: SESSION_ID, path: join(outside, "nope.txt") });
-  assert.ok(!r.ok && /not-found/.test(r.error.message), "missing outside file → not-found: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow-abs", { sessionId: SESSION_ID, path: outside });
-  assert.ok(!r.ok && /not-a-file/.test(r.error.message), "directory → not-a-file: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow-abs", { sessionId: SESSION_ID, path: "relative.txt" });
-  assert.ok(!r.ok && r.error.code === "bad-request" && /absolute/.test(r.error.message), "relative path → bad-request: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow-abs", { sessionId: SESSION_ID, path: "" });
-  assert.ok(!r.ok && r.error.code === "bad-request", "empty path → bad-request: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow-abs", { sessionId: SESSION_ID, path: join(outside, "a\u0000b.txt") });
-  assert.ok(!r.ok && r.error.code === "bad-request", "NUL in path → bad-request: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow-abs", { sessionId: "nope", path: join(outside, "secret.txt") });
-  assert.ok(!r.ok && r.error.code === "session-not-found", "unknown session → session-not-found: " + JSON.stringify(r)); n++; }
-{ const r = await call("fileshow-abs", { sessionId: COLD_ID, path: join(outside, "secret.txt") });
-  assert.ok(r.ok && r.value.kind === "text", "a COLD (persisted) session is a valid scope: " + JSON.stringify(r)); n++; }
-// finishFileShow (pure): the extension fallback fires only when sniff() is null,
+// The `log` endpoint (the change log's scroll auto-load). The `ws` fixture is
+// a PLAIN directory (no VCS), so it dispatches to the "none" backend and
+// returns an empty page — the client treats that as an exhausted log. (The
+// jj/git page content itself is exercised against real repos in jj/git
+// .test.mjs and end-to-end in e2e.)
+{ const r = await call("log", { sessionId: SESSION_ID, offset: 0, limit: 50 });
+  assert.ok(r.ok && Array.isArray(r.value.commits) && r.value.commits.length === 0, "log on a non-VCS workspace → empty page: " + JSON.stringify(r)); n++; }
+{ const r = await call("log", { sessionId: "nope", offset: 0, limit: 50 });
+  assert.ok(!r.ok && r.error.code === "session-not-found", "log with an unknown session → session-not-found: " + JSON.stringify(r)); n++; }
+{ const r = await call("log", { offset: 0, limit: 50 });
+  assert.ok(!r.ok && r.error.code === "bad-request", "log with no sessionId → bad-request: " + JSON.stringify(r)); n++; }
+
+// finishFileShow (pure) — the diff endpoint's binary sides classify through
+// this same finisher: the extension fallback fires only when sniff() is null,
 // so an unknown source extension renders as TEXT via the NUL heuristic (no NUL),
 // while a known-binary extension survives a missing signature (corrupt-file net).
 { const v = finishFileShow(Buffer.from("fn main() {}\n"), "src/main.rs");
@@ -285,14 +209,6 @@ const call = async (endpoint, payload, rpcId = "rpc-" + Math.random().toString(1
   assert.strictEqual(v.kind, "binary", "corrupt .png → binary (safety net)");
   assert.strictEqual(v.type, "image/png", "extension survives a missing signature"); n++; }
 
-// mermaid endpoint: serves the vendored renderer bundle as text.
-// Package-local asset — no session, no containment, no workspace.
-{ const r = await call("mermaid", { sessionId: SESSION_ID });
-  assert.ok(r.ok, "mermaid bundle ok: " + JSON.stringify(r.error ?? null));
-  assert.ok(typeof r.value.text === "string" && r.value.text.length > 100_000, "mermaid bundle is the ~3 MB minified renderer");
-  assert.ok(r.value.text.includes("globalThis"), "mermaid bundle exposes a global"); n++; }
-{ const r = await call("mermaid", {});
-  assert.ok(r.ok, "mermaid bundle needs no session (package-local asset)"); n++; }
 // Headless-profile shape: no sessionPersistence service at all → a dead
 // session id keeps the original hard failure (no crash, no cold path).
 { const ctx2 = { ...ctx, get(name) { if (name === "sessionPersistence") return undefined; return ctx.get(name); } };
@@ -374,4 +290,4 @@ const mtimeOf = async (p) => Math.round((await stat(p)).mtimeMs);
   n++; }
 
 await rm(base, { recursive: true, force: true });
-console.log(`host: ${n} assertions passed (browse + cold-session resolution + fileshow worktree + fileshow-abs + mermaid bundle + tick gate)`);
+console.log(`host: ${n} assertions passed (browse + cold-session resolution + finishFileShow + tick gate)`);

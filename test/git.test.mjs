@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import assert from "node:assert";
 import {
-  git, parseNameStatus, parseUntracked, parseUnmerged, parseHead, parseCommitLog,
+  git, parseNameStatus, parseUntracked, parseUnmerged, parseLogNumstat, parseForEachRef,
   unquoteGitPath, insideWorkspace, isBadRevision, gitWorkspaceStatus, gitUntrackedDiff,
-  gitCommitChanges, gitSnapshotListing, gitFileShow,
+  gitCommitChanges, gitSnapshotListing, gitFileShow, gitLogPage,
 } from "../dist/git.js";
 import { WorkspacePathError } from "../dist/containment.js";
 import { __test } from "../dist/index.js";
@@ -54,12 +54,38 @@ eq(parseUnmerged("1 100644 aaa 2 100644 bbb\tfile.txt\n3 100644 ccc\tfile.txt\n"
 eq(parseUnmerged(""), [], "clean → none");
 eq(parseUnmerged("no-tab line\n"), [], "non-conforming lines skipped");
 
-eq(parseHead("f11e978bb855abcdef0123456789abcdef0123\tbase commit\n"),
-  { id: "f11e978bb855", description: "base commit" }, "head sliced to 12 hex");
-eq(parseHead("f11e978bb855\t\n"), { id: "f11e978bb855", description: "" }, "empty subject");
-assert.strictEqual(parseHead(""), null, "no input → null");
-assert.strictEqual(parseHead("no tab here\n"), null, "no TSV line → null");
-n += 2;
+// `git log --numstat --format=%H%x09%P%x09%ae%x09%aI%x09%s` output: header
+// (sha, space-joined parent shas — empty for a root, author email, strict
+// ISO date, subject LAST), blank line, numstat lines, next header directly
+// after the last numstat line.
+const SHA_A = "7f2701fee4a67a0403306e93666f74d7f39fd2e8";
+const SHA_B = "28a92a79e2a33ba68d49de1ca586913958f3af71";
+const SHA_C = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00";
+eq(parseLogNumstat(`${SHA_A}\t${SHA_B}\tt@e.com\t2026-09-24T19:35:31-07:00\tc2 with\ttab\n\n1\t0\tb.txt\n${SHA_B}\t\tt@e.com\t2026-09-24T18:00:00+00:00\tc1\n\n-\t-\tbin.png\n`),
+  [
+    { id: SHA_A.slice(0, 12), conflict: false, empty: false, author: "t@e.com", date: "2026-09-24T19:35:31-07:00", bookmarks: [], tags: [], parents: [SHA_B.slice(0, 12)], description: "c2 with\ttab" },
+    { id: SHA_B.slice(0, 12), conflict: false, empty: false, author: "t@e.com", date: "2026-09-24T18:00:00+00:00", bookmarks: [], tags: [], parents: [], description: "c1" },
+  ], "interleaved headers + numstat, tab in subject, binary row, parents");
+eq(parseLogNumstat(`${SHA_A}\t${SHA_B} ${SHA_C}\tt@e.com\t2026-09-24T19:35:31-07:00\tmerge\n\n`),
+  [{ id: SHA_A.slice(0, 12), conflict: false, empty: true, author: "t@e.com", date: "2026-09-24T19:35:31-07:00", bookmarks: [], tags: [], parents: [SHA_B.slice(0, 12), SHA_C.slice(0, 12)], description: "merge" }],
+  "merge header carries two parents (12-hex)");
+eq(parseLogNumstat(`${SHA_B}\t\tt@e.com\t2026-09-24T18:00:00+00:00\tc1\n\n`),
+  [{ id: SHA_B.slice(0, 12), conflict: false, empty: true, author: "t@e.com", date: "2026-09-24T18:00:00+00:00", bookmarks: [], tags: [], parents: [], description: "c1" }],
+  "no numstat lines → empty");
+eq(parseLogNumstat(""), [], "empty input");
+// The cap stops NUMSTAT attribution past the limit (the `git log -n` command
+// does the row limiting; the parser's cap is a safety net): 3 commits each
+// with a numstat line, cap 2 → only the first is non-empty.
+eq(parseLogNumstat(`${SHA_A}\t${SHA_B}\tt@e.com\t2026-09-24T19:35:31\tc2\n\n1\t0\tb.txt\n${SHA_B}\t\tt@e.com\t2026-09-24T18:00:00\tc1\n\n1\t0\ta.txt\n${SHA_C}\t\tt@e.com\t2026-09-24T17:00:00\tc0\n\n1\t0\tc.txt\n`, 2),
+  [
+    { id: SHA_A.slice(0, 12), conflict: false, empty: false, author: "t@e.com", date: "2026-09-24T19:35:31", bookmarks: [], tags: [], parents: [SHA_B.slice(0, 12)], description: "c2" },
+    { id: SHA_B.slice(0, 12), conflict: false, empty: true, author: "t@e.com", date: "2026-09-24T18:00:00", bookmarks: [], tags: [], parents: [], description: "c1" },
+    { id: SHA_C.slice(0, 12), conflict: false, empty: true, author: "t@e.com", date: "2026-09-24T17:00:00", bookmarks: [], tags: [], parents: [], description: "c0" },
+  ], "cap stops numstat attribution past the limit (rows still listed)");
+
+eq([...parseForEachRef(`main\u0000${SHA_A}\ndev\u0000${SHA_B}\njunk line\n`).entries()].sort(),
+  [[SHA_B.slice(0, 12), ["dev"]], [SHA_A.slice(0, 12), ["main"]]].sort(), "branch → 12-hex map, junk skipped");
+eq([...parseForEachRef("").entries()], [], "empty input");
 
 // same containment contract as the jj side
 ok(insideWorkspace("a.txt") && insideWorkspace("sub/b.txt") && insideWorkspace("a/../b.txt"), "inside ok");
@@ -127,6 +153,8 @@ ok(st0b.ok === false && st0b.code === "not-a-workspace", "structural failure cac
 const st0c = await gitWorkspaceStatus(plain, { force: true });
 ok(st0c.ok === false && st0c.code === "not-a-workspace", "force re-probes");
 
+const branch = (await runGit(ws, ["symbolic-ref", "--short", "HEAD"])).out.trim();
+ok(branch !== "", "fixture branch name resolved: " + branch);
 const st = await gitWorkspaceStatus(ws);
 ok(st.ok, "status ok: " + JSON.stringify(st).slice(0, 300));
 {
@@ -143,7 +171,17 @@ ok(st.ok, "status ok: " + JSON.stringify(st).slice(0, 300));
   ok(by["sub/moved.txt"]?.status === "R" && by["sub/moved.txt"]?.oldPath === "mv.txt", "R mv.txt → sub/moved.txt: " + JSON.stringify(by["sub/moved.txt"]));
   ok(!by["ignored.txt"], "gitignored file absent (ls-files --exclude-standard)");
   ok(st.conflicts.length === 0, "no conflicts");
-  eq(st.commits, [{ id: sha.slice(0, 12), description: "base commit" }], "single-commit repo: the root (HEAD) is in the list");
+  ok(st.commits.length === 1, "single-commit repo: the root (HEAD) is in the list");
+  eq(st.commits[0].id, sha.slice(0, 12), "commit id is 12-hex");
+  eq(st.commits[0].description, "base commit", "commit subject");
+  eq(st.commits[0].author, "test@example.com", "author email from the fixture config");
+  ok(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(st.commits[0].date), "author date is strict ISO: " + st.commits[0].date);
+  eq(st.commits[0].bookmarks, [branch], "branch tip maps onto its commit row: " + JSON.stringify(st.commits[0].bookmarks));
+  eq(st.commits[0].tags, [], "git rows carry no tags (v1)");
+  ok(st.commits[0].empty === false && st.commits[0].conflict === false, "numstat non-empty, conflict always false");
+  eq(st.commits[0].parents, [], "root commit has no parents (graph: no line below)");
+  eq(st.head.bookmarks, [branch], "head carries the branch refs: " + JSON.stringify(st.head));
+  eq(st.head.tags, [], "head tags empty (v1)");
   ok(!by[".gitignore"] || by[".gitignore"].status !== "U", ".gitignore (tracked, unchanged) has no letter");
 }
 
@@ -174,10 +212,12 @@ const rootSha = (await runGit(ws, ["rev-parse", "HEAD~2"])).out.trim();
 // tree, a different view, the newest commit must stay individually reviewable.
 const st3 = await gitWorkspaceStatus(ws);
 ok(st3.head.id === topSha.slice(0, 12) && st3.head.description === "top commit", "head is the newest commit");
-ok(st3.commits.length === 3, "dropdown lists all 3 commits incl HEAD: " + JSON.stringify(st3.commits));
-eq(st3.commits[0], { id: topSha.slice(0, 12), description: "top commit" }, "HEAD first (newest-first)");
-eq(st3.commits[1], { id: midSha.slice(0, 12), description: "mid commit" }, "then mid");
+ok(st3.commits.length === 3, "tree lists all 3 commits incl HEAD: " + JSON.stringify(st3.commits));
+eq([st3.commits[0].id, st3.commits[0].description], [topSha.slice(0, 12), "top commit"], "HEAD first (newest-first)");
+eq([st3.commits[1].id, st3.commits[1].description], [midSha.slice(0, 12), "mid commit"], "then mid");
 eq(st3.commits[2].id, rootSha.slice(0, 12), "root commit included (git's root is a real commit)");
+eq(st3.commits.map((c) => c.bookmarks), [[branch], [], []], "branch maps only to the tip row: " + JSON.stringify(st3.commits.map((c) => c.bookmarks)));
+ok(st3.commits.every((c) => c.empty === false && c.conflict === false), "all three commits non-empty, conflict always false");
 
 const ccTop = await gitCommitChanges(ws, topSha);
 const ccTopMap = Object.fromEntries(ccTop.map((e) => [e.path, e.status]));
@@ -280,8 +320,6 @@ const gcall = (endpoint, payload) => __test.makeBrowseHandler(gitCtx)(endpoint, 
   const r = await gcall("diff", { sessionId: "git-sess", relPath: "a*b.txt", base: globSha.slice(0, 12) });
   ok(r.ok, "glob-metachar diff ok: " + JSON.stringify(r).slice(0, 200));
   ok(r.value.patch.includes("a*b.txt") && !r.value.patch.includes("aXb.txt"), ":(literal) pathspec scopes to the literal file (no glob sibling leak): " + r.value.patch);
-  const r2 = await gcall("fileshow", { sessionId: "git-sess", relPath: "a*b.txt", rev: globSha.slice(0, 12) });
-  ok(r2.ok && r2.value.text === "ab2\n", "fileshow of the glob-metachar path (rev:path is already literal): " + JSON.stringify(r2).slice(0, 200));
   n++;
 }
 {
@@ -331,14 +369,6 @@ const gcall = (endpoint, payload) => __test.makeBrowseHandler(gitCtx)(endpoint, 
   n++;
 }
 {
-  // fileshow dispatches to git (the verdict was set by the list@rev above)
-  const r = await gcall("fileshow", { sessionId: "git-sess", relPath: "c1.txt", rev: midSha.slice(0, 12) });
-  ok(r.ok && r.value.kind === "text" && r.value.text === "first extra\n", "fileshow bytes at a git rev: " + JSON.stringify(r).slice(0, 200));
-  const r2 = await gcall("fileshow", { sessionId: "git-sess", relPath: "c1.txt", rev: rootSha.slice(0, 12) });
-  ok(!r2.ok && r2.error.code === "internal", "fileshow path absent at the rev → internal, not a raw jj/git error code: " + JSON.stringify(r2).slice(0, 200));
-  n++;
-}
-{
   const r = await gcall("list", { sessionId: "git-sess", relPath: "../escape" });
   ok(!r.ok && r.error.code === "workspace-invalid-path" && r.error.details.path === "../escape", "containment → workspace-invalid-path (envelope-legal)");
   n++;
@@ -370,6 +400,41 @@ ok(st2.changes.length === 1 && st2.changes[0].path === "only.txt" && st2.changes
 ok(st2.commits.length === 0, "no commits yet → empty dropdown list");
 const ud2 = await gitUntrackedDiff(ws2, "only.txt");
 ok(ud2.ok && ud2.value.includes("+hello"), "U diff works with no HEAD at all (--no-index needs no repo state)");
+
+// The `log` endpoint's page function (the change log's scroll auto-load). A
+// fresh fixture with MORE than one page of commits: page 0 (50, HEAD
+// included) + the remainder as one short page, contiguous in git's own order,
+// a branch pill filled on a PAGE-1 row (for-each-ref runs on paged rows), and
+// a page at the end that is empty (the client's exhaustion signal).
+{
+  const lb = await mkdtemp(join(tmpdir(), "filez-git-log-"));
+  const lws = join(lb, "ws");
+  await mkdir(lws);
+  await runGit(lws, ["init", "-q"]);
+  await runGit(lws, ["config", "user.email", "test@example.com"]);
+  await runGit(lws, ["config", "user.name", "TestUser"]);
+  const N = 55;
+  for (let i = 1; i <= N; i++) {
+    const r = await runGit(lws, ["commit", "--allow-empty", "-qm", "log-c" + i]);
+    if (r.code !== 0) throw new Error("git commit log-c" + i + ": " + r.msg);
+  }
+  // A branch on a commit that lives in PAGE 1 (the 3rd oldest), so the
+  // bookmark fill is exercised on a paged (not first-page) row.
+  const br = await runGit(lws, ["branch", "oldline", "HEAD~" + (N - 3)]);
+  ok(br.code === 0, "branch on a page-1 commit: " + br.msg);
+  const p0 = await gitLogPage(lws, 0, 50);
+  ok(p0.commits.length === 50, "git log page 0 = 50 rows: " + p0.commits.length);
+  const p1 = await gitLogPage(lws, 50, 50);
+  ok(p1.commits.length === 5, "git log page 1 = the short remainder (5): " + p1.commits.length);
+  const all = [...p0.commits, ...p1.commits];
+  ok(new Set(all.map((c) => c.id)).size === 55, "55 distinct shas across the two pages (no overlap)");
+  ok(all[0].description === "log-c55" && all[54].description === "log-c1", "newest-first across the page boundary: " + all[0].description + " … " + all[54].description);
+  const brRow = all.find((c) => (c.bookmarks ?? []).includes("oldline"));
+  ok(!!brRow && all.indexOf(brRow) >= 50, "branch pill filled on a page-1 row: " + (brRow ? brRow.description : "(none)") + " @index " + (brRow ? all.indexOf(brRow) : -1));
+  const pEnd = await gitLogPage(lws, N, 50);
+  ok(pEnd.commits.length === 0, "a git page at the end is empty (exhaustion)");
+  await rm(lb, { recursive: true, force: true });
+}
 
 const gitVersion = (await runGit(plain, ["--version"])).out.trim().replace(/^git version /, "");
 await rm(base, { recursive: true, force: true });

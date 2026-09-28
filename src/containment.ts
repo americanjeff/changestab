@@ -1,4 +1,4 @@
-// Workspace path containment for filestab's read-only file browser.
+// Workspace path containment for changestab's read-only Changes view.
 //
 // All host-side FS access resolves through here. Containment is LEXICAL: the
 // code checks the path TEXT (no absolute paths, no `..` climbing above the
@@ -6,7 +6,7 @@
 // workspace that points outside is therefore readable — deliberate, for a
 // local, operator-controlled tool: a link target the user could already read
 // is not a new privilege, so the plugin does not pay to block it. The browse
-// endpoints (list / diff / fileshow) touch only paths whose spelling stays
+// endpoints (list / diff) touch only paths whose spelling stays
 // inside the session's workspace root.
 
 import { realpath } from "node:fs/promises";

@@ -1,12 +1,12 @@
 // test/e2e/e2e.test.mjs, end-to-end journeys against a sandboxed dsh instance
 // driven by a real headless browser (playwright-core + a playwright chromium).
 //
-// Scope: the Files view journeys J1, J1.2, J3, J4, J5, J6, J7, J8, J19, J20 (each
+// Scope: the Changes view journeys J1, J1.2, J8, J19, J20, J21, J22, J23, J24 (each
 // defined by its section header below). On 0.1.5+ the Files view is the dsh RIGHT
 // PANE (the conversation area has no Files tab), so openSession opens that pane via
-// the host's own expand button. filestab registers its OWN "filestab" tab kind
+// the host's own expand button. changestab registers its OWN "changestab" tab kind
 // alongside the stock "files" page (sibling mode), so the pane seeds on the guide
-// page and clickFilesTab picks the Filestab capsule.
+// page and clickFilesTab picks the Changes capsule.
 // The workspace picker and the send-a-message session flow are dsh's own UI;
 // here they are automation helpers, not code under test.
 //
@@ -20,7 +20,7 @@
 // "hello" agent turn on the model route in settings.yaml.
 //
 // Prereqs: dsh and jj on PATH; a playwright chromium (~/.cache/ms-playwright,
-// newest build) or E2E_CHROME=/path/to/chrome; filestab dist/ built (npm test).
+// newest build) or E2E_CHROME=/path/to/chrome; changestab dist/ built (npm test).
 //
 // Run: npm run e2e  -- intentionally separate from npm test (it needs a
 // browser, a live model route, and the dsh CLI; the unit suites stay hermetic).
@@ -42,7 +42,16 @@ const DSH_BIN = process.env.E2E_DSH || "dsh";
 // classes, the "Add workspace"/"Send message" button labels) -- that is not a
 // stable contract. When dsh is bumped this check fails on purpose: rework the
 // selectors against the new UI first, then bump DSH_VERSION.
-const DSH_VERSION = "0.1.5-rc.2";
+// Re-verified for 0.1.7-rc.2: .ZuhsRW_crumbEditZone (directory picker) and
+// .uV2eYG_input (composer) keep their hashes; the dialog "Open" button needs
+// exact: true (a new "Open right sidebar" toggle shares the name prefix);
+// and the right pane's OPEN state is now RESTORED across a full reload
+// (ensurePaneOpen waits for either outcome).
+// Re-verified for 0.2.0-rc.1: zero selector changes — both hashed classes
+// (they live in lazy chunks, not the main bundle) and every role/data-attr
+// selector still resolve; the host also gained a plugin peerDependency
+// gate (see the dsh-image-settings skip in boot logs).
+const DSH_VERSION = "0.2.0-rc.1";
 function checkDshVersion() {
   const actual = execFileSync(DSH_BIN, ["--version"], { encoding: "utf8" }).trim();
   assert.equal(actual, DSH_VERSION, `dsh version changed (${actual} != ${DSH_VERSION}): the e2e session-opening selectors ride on dsh's own UI and need reworking -- re-verify against the new build, then bump DSH_VERSION.`);
@@ -83,49 +92,25 @@ function makeScratchHome(root) {
 
 function makeFixtures(root) {
   const fx = { root: join(root, "fixtures") };
-  // F-JJ: one described commit ("base") + a dirty worktree with 6 visible
-  // entries, incl. a 2 MB random file over FILE_SHOW_CAP (J3).
+  // F-JJ: one commit with CONTENT (base.txt — so a commit row can be
+  // selected into commit mode with a real file list + diff) + a dirty
+  // worktree (described "base") with 4 unadded files, incl. a nested dir
+  // (the grouping) and a 2 MB random binary.
   fx.fj = join(fx.root, "fj");
   mkdirSync(join(fx.fj, "sub"), { recursive: true });
   execFileSync("jj", ["git", "init"], { cwd: fx.fj });
+  // Written BEFORE `jj new`: it lands in the FIRST (undescribed) change,
+  // which the `jj new -m base` step leaves behind as the one commit row.
+  writeFileSync(join(fx.fj, "base.txt"), "the base\n");
   execFileSync("jj", ["new", "-m", "base"], { cwd: fx.fj });
   writeFileSync(join(fx.fj, "a.txt"), "one\ntwo\n");
   writeFileSync(join(fx.fj, "sub", "nested.txt"), "x");
-  writeFileSync(join(fx.fj, "doc.md"), "# Doc\n\nA **bold** para.\n\n- item\n");
-  writeFileSync(join(fx.fj, "page.html"), "<!doctype html><title>t</title><p>hi</p>");
   writeFileSync(join(fx.fj, "pic.png"), PNG_1X1);
   writeFileSync(join(fx.fj, "big.bin"), randomBytes(2_000_000));
-  // F-PLAIN: no VCS at all (J1.2, J4, J5). Without VCS nothing is diffable,
-  // so pane defaults resolve to the non-diff branches (markdown -> preview,
-  // html -> raw view) exactly as the journeys describe.
+  // F-PLAIN: no VCS at all (J1.2).
   fx.plain = join(fx.root, "plain");
   mkdirSync(fx.plain, { recursive: true });
   writeFileSync(join(fx.plain, "hi.txt"), "hi\n");
-  // J4: markdown — heading, bold, list, a GFM table, a javascript: link
-  // (markdown-it's default link validator must drop it, text stays visible),
-  // a PLAIN paragraph (renders 1:1 to source → the click ref carries a
-  // column), and a mermaid fence (J5's frame assertions).
-  writeFileSync(join(fx.plain, "doc.md"),
-    "# Doc\n\nA **bold** para.\n\n- item\n\n" +
-    "| h1 | h2 |\n| -- | -- |\n| a  | b  |\n\n" +
-    "[js link](javascript:alert(1))\n\n" +
-    "plain paragraph line\n\n" +
-    "```mermaid\nflowchart TD\n  A-->B\n```\n");
-  // J5: sandboxed HTML — the script must run IN the frame only: it sets the
-  // frame's title, tries to write a PARENT property (opaque origin must
-  // throw), ticks a counter to the parent via postMessage, and attempts a
-  // fetch that the frame's CSP must block.
-  writeFileSync(join(fx.plain, "page.html"),
-    "<!doctype html><title>t</title><p>hi</p>\n<script>\n" +
-    "window.__ran = true;\n" +
-    "document.title = \"rendered-ok\";\n" +
-    "var r = \"unknown\";\n" +
-    "try { window.parent.__filezProbe = 1; r = \"parent-write-ok\"; } catch (e) { r = \"parent-write-blocked:\" + e.name; }\n" +
-    "window.__probeResult = r;\n" +
-    "window.__ticks = 0;\n" +
-    "setInterval(function () { window.__ticks++; parent.postMessage({ filezProbeTick: window.__ticks }, \"*\"); }, 50);\n" +
-    "fetch(\"http://127.0.0.1:1/csp-probe\").catch(function () {});\n" +
-    "</script>\n");
   // F-JJ-20: J20's own fresh jj session — a FIRST mount of the Files view
   // (no nav cache, no earlier journey on the page), the exact case where a
   // dead tick interval stays dead. Kept separate from fj so J20's disk
@@ -135,6 +120,49 @@ function makeFixtures(root) {
   execFileSync("jj", ["git", "init"], { cwd: fx.fj20 });
   execFileSync("jj", ["new", "-m", "base"], { cwd: fx.fj20 });
   writeFileSync(join(fx.fj20, "a.txt"), "one\ntwo\n");
+  // F-JJ-FORK: J23's branching — the shape a user actually reported: `base`
+  // FORKS into `fork child 1` (the off-path branch, a leaf that never
+  // re-enters the worktree's lineage) and `fork child 2` (the worktree side).
+  // The working copy sits ON fork child 2. Under the old `ancestors(@-)`
+  // revset fork child 1 was pruned entirely (it is no ancestor of @); under
+  // jj's own default log scope — `builtin_log() ~ @`, what a plain `jj log`
+  // shows — it renders on its own lane next to its sibling. Each change
+  // tracks its own file so the snapshot file list has content. Divergence
+  // (the /N offsets + (divergent) labels) is deliberately NOT built here: jj
+  // auto-hides the commits a divergence would need, so that rendering is
+  // unit-tested.
+  fx.fjf = join(fx.root, "fjf");
+  mkdirSync(fx.fjf, { recursive: true });
+  execFileSync("jj", ["git", "init"], { cwd: fx.fjf });
+  writeFileSync(join(fx.fjf, "base.txt"), "the base\n");
+  execFileSync("jj", ["file", "track", "base.txt"], { cwd: fx.fjf });
+  execFileSync("jj", ["describe", "-r", "@", "-m", "base"], { cwd: fx.fjf });
+  execFileSync("jj", ["bookmark", "create", "base"], { cwd: fx.fjf });
+  // The off-path branch: a child of base, no descendants on the worktree path.
+  execFileSync("jj", ["new", "-m", "fork child 1"], { cwd: fx.fjf });
+  writeFileSync(join(fx.fjf, "c1.txt"), "child one\n");
+  execFileSync("jj", ["file", "track", "c1.txt"], { cwd: fx.fjf });
+  execFileSync("jj", ["bookmark", "create", "c1"], { cwd: fx.fjf });
+  // The worktree side: the other child of base; the working copy stays here.
+  execFileSync("jj", ["new", "-r", "base", "-m", "fork child 2"], { cwd: fx.fjf });
+  writeFileSync(join(fx.fjf, "c2.txt"), "child two\n");
+  execFileSync("jj", ["file", "track", "c2.txt"], { cwd: fx.fjf });
+  execFileSync("jj", ["bookmark", "create", "c2"], { cwd: fx.fjf });
+  // F-JJ-LOG: J24's pagination — a jj repo with MORE than one page of commits
+  // (54 real + the root = 55 rows), so the first page (the host's 50) leaves
+  // 5 to auto-load on scroll (4 commits + the root, the log's floor).
+  // `jj commit` (not `jj new`) keeps @ a fresh worktree, so the visible log
+  // (the `~ @` revset) is exactly log-c1..log-c54 + the root, newest first.
+  // Each commit modifies f.txt so it is a REAL (non-empty) change — an empty
+  // commit's description renders with an `(empty)` prefix, which would break
+  // the plain-description assertions.
+  fx.fjlog = join(fx.root, "fjlog");
+  mkdirSync(fx.fjlog, { recursive: true });
+  execFileSync("jj", ["git", "init"], { cwd: fx.fjlog });
+  for (let i = 1; i <= 54; i++) {
+    writeFileSync(join(fx.fjlog, "f.txt"), "line " + i + "\n");
+    execFileSync("jj", ["commit", "-m", "log-c" + i], { cwd: fx.fjlog });
+  }
   return fx;
 }
 
@@ -225,7 +253,9 @@ async function openSession(browser, { url, workspace }) {
     await input.fill(workspace);
     await input.press("Enter");
     await page.waitForTimeout(1200);
-    await page.getByRole("button", { name: "Open" }).click();
+    // exact: 0.1.7 added an "Open right sidebar" toggle whose accessible name
+    // starts with "Open"; a substring match resolves to both.
+    await page.getByRole("button", { name: "Open", exact: true }).click();
     await page.waitForTimeout(3000);
     // A session only gets its conversation pane (with the view tabs) once a
     // turn exists; send one. This is the one real model call per workspace.
@@ -241,7 +271,7 @@ async function openSession(browser, { url, workspace }) {
     // builds the conversation pane; the right pane is collapsed and is opened
     // by the host's own expand button in the conversation header corner.
     // Sibling mode: the pane seeds on the GUIDE page (the stock "files" entry
-    // and filestab's), so clickFilesTab clicks the Filestab capsule after the
+    // and changestab's), so clickFilesTab clicks the Changes capsule after the
     // expand. Poll (evaluate, not waitForFunction) to dodge the arg/options
     // positional trap.
     console.log(`openSession(${workspace.split("/").pop()}): hello sent, waiting for the conversation + right-pane expand button`);
@@ -272,22 +302,33 @@ async function openSession(browser, { url, workspace }) {
 
 // 0.1.5+: there is no conversation Files tab — openSession opened the right
 // pane. Sibling mode: the pane seeds on the guide page (two entries), so open
-// the Filestab capsule (the guide buttons carry the contributing kind as
+// the Changes capsule (the guide buttons carry the contributing kind as
 // data-sidebar-right-guide-entry); if a host ever seeds the page directly
 // (the capsule absent), the root is already up.
 async function clickFilesTab(page) {
-  const cap = page.locator('[data-sidebar-right-guide-entry="filestab"]');
-  if (await cap.count()) await cap.first().click();
+  const cap = page.locator('[data-sidebar-right-guide-entry="changestab"]');
+  if (await cap.count()) {
+    await cap.first().click();
+  } else {
+    // A page tab is already open (the guide page is gone): activate the
+    // changestab PAGE TAB in the tab bar. The data-sidebar-right-tab span is
+    // a ZERO-SIZE title-registration marker (clicking it hits whatever is
+    // visually there); the clickable node is the dockkit tab (role=tab)
+    // whose title span carries the exact tab label ("Changes" since 0.2.0).
+    const tab = page.locator('[data-dockkit-tab]', {
+      has: page.locator('[data-dockkit-tab-title]', { hasText: /^Changes$/ }),
+    });
+    if (await tab.count()) await tab.first().click();
+  }
   await page.locator(".dswFiles_root").waitFor({ state: "visible", timeout: 20_000 });
 }
 
 // The Files view's stable, ours-namespace selectors.
 function ui(page) {
   const root = () => page.locator(".dswFiles_root");
-  const rowNames = () => page.locator(".dswFiles_name").allTextContents();
-  const row = (name) => page.locator(".dswFiles_row", {
-    has: page.locator(".dswFiles_name", { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }),
-  });
+  // The selected change's changed-file list (0.2.0): file leaves are
+  // li[data-files-change-file] — the only rows the view renders.
+  const fileRow = (path) => root().locator(`li[data-files-change-file="${path}"] .dswFiles_changeFileRow`);
   const previewText = async () => (await root().locator(".dswFiles_previewPane").innerText().catch(() => "")) ?? "";
   const until = async (fn, what, ms = 15_000) => {
     const t0 = Date.now();
@@ -297,12 +338,28 @@ function ui(page) {
       await page.waitForTimeout(250);
     }
   };
-  return { page, root, rowNames, row, previewText, until };
+  // 0.1.5 DROPPED the right pane's open state on a full reload (the host's
+  // sidebar rebooted collapsed), so a reload had to click the host's expand
+  // control. 0.1.7 RESTORES the pane (open, with its active tab), so after a
+  // reload the Files view may simply come back and the expand control — which
+  // only exists while the pane is collapsed — never renders. Wait for EITHER
+  // outcome; click the control only in the old-behavior case.
+  const ensurePaneOpen = async () => {
+    const t0 = Date.now();
+    for (;;) {
+      if ((await root().count()) === 1) return; // restored open (or already open)
+      const expand = page.locator('[data-sidebar-right-expand]');
+      if ((await expand.count()) > 0) await expand.click();
+      if (Date.now() - t0 > 30_000) throw new Error("timeout waiting for the Files view after reload");
+      await page.waitForTimeout(500);
+    }
+  };
+  return { page, root, fileRow, previewText, until, ensurePaneOpen };
 }
 
 function checkConsole(session, label) {
-  const ours = session.errors.filter((t) => /filez|filestab|dswFiles/i.test(t));
-  // A dsh host bug (dsh BUG-028), not filestab's: a full page reload re-runs
+  const ours = session.errors.filter((t) => /filez|changestab|dswFiles/i.test(t));
+  // A dsh host bug (dsh BUG-028), not changestab's: a full page reload re-runs
   // the client bundles' slot registration against a slot registry that
   // survives the reload, and dsh-client-ui-tool's keyed "read_image" toolview
   // entry throws. Filter the EXACT message (J19's reload step trips it) so a
@@ -313,115 +370,119 @@ function checkConsole(session, label) {
     !t.includes('keyed slot "tool.call.toolview" already has an entry for key "read_image"'));
   ok(hostBugs.length === 0, `no uncaught page errors (${label})\n` + hostBugs.join("\n").slice(0, 800));
   if (dshReloadNoise.length > 0) console.log(`e2e: ${label}: ${dshReloadNoise.length} dsh reload-registration page error(s) ignored (host bug, filtered)`);
-  ok(ours.length === 0, `no filestab console errors (${label})\n` + ours.join("\n").slice(0, 800));
+  ok(ours.length === 0, `no changestab console errors (${label})\n` + ours.join("\n").slice(0, 800));
   const benign = session.errors.length - ours.length;
   if (benign > 0) console.log(`e2e: ${label}: ${benign} benign console error(s) ignored`);
 }
 
 // ── journeys (the journey section headers below) ───────────────────────────────────────
 
-// J1: first look -- listing, jj status line, rollup, empty preview.
+// J1: first look -- the change tree, the grouped changed-file list
+// (directories expanded by default), the empty diff preview.
 async function j1_firstLook(u) {
-  const sel = u.root().locator(".dswFiles_statusSelect");
-  await u.until(async () => (await sel.count()) > 0, "jj status line");
-  const firstOpt = (await sel.locator("option").first().textContent()).trim();
-  match(firstOpt, /^@ [0-9a-z]{12} base$/, `jj worktree row = @ + 12-char change id + description, got: ${firstOpt}`);
-  const count = await u.root().locator(".dswFiles_statusCount").innerText();
-  match(count, /6/, `worktree rollup counts the 6 additions, got: ${count}`);
-  const names = await u.rowNames();
-  for (const n of ["sub", "a.txt", "big.bin", "doc.md", "page.html", "pic.png"]) {
-    ok(names.includes(n), `row ${n} present (have: ${names.join(", ")})`);
-  }
-  ok(!names.includes(".jj") && !names.includes(".git"), `hidden entries absent by default (have: ${names.join(", ")})`);
-  eq((await u.row("a.txt").locator(".dswFiles_badge").innerText()).trim(), "U", "a.txt carries the U (unadded) badge (a jj worktree add IS the unadded state)");
-  const footer = await u.root().locator(".dswFiles_footerBar").innerText();
-  ok(footer.includes("6 items"), `footer counts 6 items, got: ${footer.replace(/\n/g, " ")}`);
-  ok((await u.previewText()).includes("Select a file to preview"), "preview starts empty");
+  const tree = u.root().locator(".dswFiles_changeTree");
+  await u.until(async () => (await tree.count()) > 0, "change tree");
+  const wt = u.root().locator('[data-files-change="worktree"]');
+  const wtText = (await wt.innerText()).replace(/\n/g, " ");
+  ok(wtText.includes("Editing"), `worktree row is labeled "Editing", got: ${wtText}`);
+  ok(!((await wt.locator(".dswFiles_changeId").innerText()) || "").includes("@"), `the worktree id stays a bare change id, got: ${wtText}`);
+  // The row renders through the commit rows' code: the jj change id
+  // (two-tone) + "Editing" + the description — no aggregate decoration.
+  eq(await wt.locator(".dswFiles_changeIdSig").count(), 1, "the worktree row shows the change id with its jj significant prefix");
+  // The node character is jj's own working-copy glyph (@, the CLI's
+  // builtin_log_node), styled as the wc tone.
+  eq(await wt.locator(".dswFiles_changeGlyph_wc").count(), 1, "the worktree node character is jj's @ glyph");
+  eq(await wt.locator(".dswFiles_changeGlyph_wc").innerText(), "@", "the worktree node renders the @ character");
+  const firstCommit = u.root().locator('[data-files-change]:not([data-files-change="worktree"])').first();
+  eq(await firstCommit.locator(".dswFiles_changeGlyph_normal").count(), 1, "a plain commit row carries jj's ○ node character");
+  match(wtText, /Editing base/, `worktree row = id + "Editing" + the fixture's "base" description, got: ${wtText}`);
+  // The changed-file list groups by directory: `sub` is a dir row (expanded
+  // by default) BEFORE the root files, and `nested.txt` sits under it.
+  const subDir = u.root().locator('li[data-files-change-dir="sub"]');
+  eq(await subDir.count(), 1, "the sub dir row renders");
+  eq(await subDir.locator("button.dswFiles_changeDirRow").getAttribute("aria-expanded"), "true", "directories start expanded");
+  eq(await subDir.locator('li[data-files-change-file="sub/nested.txt"]').count(), 1, "nested.txt grouped under sub");
+  // The dir row follows the stock file browser's pattern: the host's folder
+  // icon (a real SVG — a missing icon name degrades to a box text glyph) and
+  // no disclosure chevron.
+  const dirBtn = subDir.locator("button.dswFiles_changeDirRow");
+  eq(await dirBtn.locator("> svg").count(), 1, "the dir row renders the host folder SVG (icon name resolved, not the text fallback)");
+  ok(!/[▢▣]/.test((await dirBtn.innerText()) || ""), "no box-glyph fallback in the dir row");
+  const top = u.root().locator("ul.dswFiles_changeFiles > li");
+  const topOrder = await top.evaluateAll((els) => els.map((e) => e.getAttribute("data-files-change-dir") || e.getAttribute("data-files-change-file")));
+  eq(topOrder.join(","), "sub,a.txt,big.bin,pic.png", "root level: the dir first, then the files natural-sorted, got: " + topOrder.join(","));
+  eq(await u.root().locator('li[data-files-change-file="a.txt"] .dswFiles_badgeU').count(), 1, "a.txt carries the U (unadded) badge");
+  // The split panes: the change log (top, its own scroll region) over the
+  // changed-file list (bottom), with the movable divider between.
+  eq(await u.root().locator(".dswFiles_hDivider").count(), 1, "the log/files divider renders");
+  match((await u.root().locator(".dswFiles_filesPaneHead").innerText()), /Changed files · 4/, "the files pane caption counts the selected change's files");
+  // The graph: every row carries its lane column to the left of the text.
+  eq(await tree.locator(".dswFiles_rowLanes").count(), 3, "worktree + commit + root rows each carry the lane column");
+  // jj's two-tone id: the significant prefix highlighted, the rest dim —
+  // the displayed id is the shortest(8) form (8..12 chars), the prefix is
+  // its leading slice.
+  const commitRow = tree.locator('button[data-files-change]:not([data-files-change="worktree"])').first();
+  eq(await commitRow.locator(".dswFiles_changeIdSig").count(), 1, "the commit id carries the highlighted prefix span");
+  const idText = ((await commitRow.locator(".dswFiles_changeId").innerText()) || "").trim();
+  const sigText = ((await commitRow.locator(".dswFiles_changeIdSig").innerText()) || "").trim();
+  ok(idText.length >= 8 && idText.length <= 12, "jj's shortest(8) id form is 8..12 chars, got: " + idText);
+  ok(sigText.length >= 1 && sigText.length <= idText.length && idText.startsWith(sigText), "the highlighted prefix is the id's leading slice");
+  const fullId = ((await commitRow.locator(".dswFiles_changeId").getAttribute("title")) || "").trim();
+  eq(fullId.length, 12, "the title carries the full 12-char change id");
+  ok(fullId.startsWith(idText), "the displayed shortest(8) form is the full id's leading slice");
+  // The 0.1.x listing surface is gone: no footer bar, no browse tree.
+  eq(await u.root().locator(".dswFiles_footerBar").count(), 0, "no footer bar (listing removed)");
+  // The preview starts empty (diff-only).
+  ok((await u.previewText()).includes("Select a changed file to view its diff"), "preview starts with the empty-diff note");
 }
 
-// Defensive no-op helper from the diff-default era: a selected file now
-// opens as its CONTENT (view/preview) by default, so the View button is
-// usually already active (clicking an already-active mode is a no-op).
-// Kept for the journeys that call it — it stays correct if the default
-// ever flips back.
-async function viewMode(u) {
-  const btn = u.root().locator(".dswFiles_paneToggleBtn", { hasText: /^View$/ });
-  if (await btn.count() > 0) await btn.first().click();
-}
-
-// J3: text preview in pane; the >1MB file stays a card, never a byte dump.
-async function j3_textPreview(u) {
-  await u.row("a.txt").click();
-  await viewMode(u);
-  await u.until(async () => (await u.root().locator(".dswFiles_previewText").count()) > 0, "a.txt text preview rendered");
-  const pre = await u.root().locator(".dswFiles_previewText").innerText();
-  ok(pre.includes("one") && pre.includes("two"), `a.txt raw text in pane, got: ${JSON.stringify(pre.slice(0, 60))}`);
-  await u.row("big.bin").click();
-  await viewMode(u);
-  await u.until(async () => {
-    const t = await u.previewText();
-    return t.includes("binary file") || t.includes("Couldn't preview");
-  }, "big.bin stays a card");
-  const t = await u.previewText();
-  ok(t.length < 2000, "big.bin preview is a card, not a 2MB byte dump");
-}
-
-// J8: click → ref in the head row. A single click on a line morphs the head
-// row into the EXACT pasteable token (no selection → no text), and the copy
-// button puts that very string on the clipboard. A drag-selection supersedes
-// the click ref — and the selection ref always carries the selected text.
-// The insert commits the ref into the composer draft (exactly, deduped,
-// caret moved to the composer) — and exits fullscreen first when the right
-// bar is covering the conversation. Right-clicks are no longer intercepted
-// (the browser's native context menu is back — no custom menu appears).
+// J8: click → ref in the head row. A single click on a diff line morphs the
+// head row into the EXACT pasteable token (no selection → no text), and the
+// copy button puts that very string on the clipboard. A drag-selection
+// supersedes the click ref — the selection ref carries the selected text.
+// The insert commits the ref into the composer draft (exactly, deduped).
 async function j8_clickRef(u) {
   const root = u.root();
-  await u.row("a.txt").click();
-  await u.until(async () => (await root.locator("pre.dswFiles_previewText").count()) > 0, "a.txt text preview");
-  // At rest: the path (dim dir + name), no token, no ref buttons.
+  await u.fileRow("a.txt").click();
+  await u.until(async () => (await root.locator(".dswFiles_diff").count()) === 1, "a.txt diff rendered");
+  // At rest: the path (dim dir + name), no token, no copy button; the
+  // Open-in-Files handoff IS present (plain viewing belongs to that tab).
   await u.until(async () => (await root.locator(".dswFiles_paneHeadPath").count()) === 1, "head row at rest");
   eq((await root.locator(".dswFiles_paneHeadPath").innerText()).trim(), "a.txt", "at rest shows the workspace-relative path");
   eq(await root.locator(".dswFiles_paneHeadToken").count(), 0, "no ref token at rest");
-  // The action cluster hugs the path (a 6px flex gap) — flush right would
-  // read as "acts on the file", not "acts on the ref".
-  const pathBox = await root.locator(".dswFiles_paneHeadPath").boundingBox();
-  const btnBox = await root.locator(".dswFiles_paneHeadBtns").boundingBox();
-  ok(btnBox.x - (pathBox.x + pathBox.width) <= 10, `the button cluster sits next to the path (gap ${Math.round(btnBox.x - pathBox.x - pathBox.width)}px)`);
-  // The hover text names the ACTION the click will take (the payload is
-  // what the row shows).
-  eq((await root.locator(".dswFiles_paneHeadBtns button").getAttribute("title")), "Copy path", "at rest the copy button's tooltip names the path action");
-  const pre = root.locator("pre.dswFiles_previewText");
-  const box = await pre.boundingBox();
-  // Click line 1 (pre padding 8px, line-height 18px → y+10 is inside line 1).
-  await u.page.mouse.click(box.x + 12, box.y + 10);
+  eq(await root.locator(".dswFiles_paneHeadBtns button[aria-label='Copy ref']").count(), 0, "no copy button at rest");
+  eq(await root.locator(".dswFiles_paneHeadBtns button[aria-label='Open in Files']").count(), 1, "the ↗ Open-in-Files handoff renders at rest");
+  // Click line 1 of the diff (a new file: every line is an add, data-dn =
+  // the worktree line number).
+  const cell = root.locator('.dswFiles_diffCell[data-dn="1"]');
+  await u.until(async () => (await cell.count()) === 1, "the first diff line cell");
+  await cell.click();
   await u.until(async () => (await root.locator(".dswFiles_paneHeadToken").count()) === 1, "click on a line → the ref token in the head row");
   const token = await root.locator(".dswFiles_paneHeadToken").getAttribute("title");
-  match(token, /^@a\.txt:1:\d+$/, `the head row shows the exact pasteable token (raw click = line + column), got: ${token}`);
-  eq(await root.locator(".dswFiles_paneHeadBtns button[aria-label='Copy ref']").getAttribute("title"), "Copy ref", "with a ref the copy button's tooltip names the ref action");
-  eq(await root.locator(".dswFiles_paneHeadBtns button[aria-label='Add ref to chat']").getAttribute("title"), "Add ref to chat", "the insert button's tooltip names the insert action");
+  match(token, /^@a\.txt:\d+$/, `the head row shows the exact pasteable line ref, got: ${token}`);
+  eq(await root.locator(".dswFiles_paneHeadBtns button[aria-label='Copy ref']").count(), 1, "with a ref the copy button renders");
+  eq(await root.locator(".dswFiles_paneHeadBtns button[aria-label='Add ref to chat']").count(), 1, "with a ref the insert button renders");
   // The copy button puts that EXACT string on the clipboard.
   await u.page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(u.page.url()).origin });
   await root.locator(".dswFiles_paneHeadBtns button[aria-label='Copy ref']").click();
   eq(await u.page.evaluate(() => navigator.clipboard.readText()), token, "copy ref → the head row's exact token on the clipboard");
-  // A right-click no longer opens any filestab menu (the native menu is the browser's).
-  await u.page.mouse.click(box.x + 12, box.y + 10, { button: "right" });
-  await u.page.waitForTimeout(300);
-  eq(await root.locator(".dswFiles_ctxMenu").count(), 0, "right-click is not intercepted (no custom menu)");
-  // A drag-selection across lines 1–2 supersedes the click ref — and, per
-  // the gesture rule, the selection ref ALWAYS carries the selected text.
-  await u.page.mouse.move(box.x + 12, box.y + 10);
+  // A drag-selection across lines 1–2 supersedes the click ref — the
+  // selection ref ALWAYS carries the selected text.
+  const c1 = await cell.boundingBox();
+  const c2 = await root.locator('.dswFiles_diffCell[data-dn="2"]').boundingBox();
+  await u.page.mouse.move(c1.x + c1.width / 2, c1.y + c1.height / 2);
   await u.page.mouse.down();
-  await u.page.mouse.move(box.x + 12, box.y + 30, { steps: 4 });
+  await u.page.mouse.move(c2.x + c2.width / 2, c2.y + c2.height / 2, { steps: 4 });
   await u.page.mouse.up();
   await u.until(async () => {
     const tk = await root.locator(".dswFiles_paneHeadToken").getAttribute("title").catch(() => null);
     return tk && tk.includes("-") && tk.includes('"');
   }, "drag → a range token with the selected text supersedes the click ref");
   const range = await root.locator(".dswFiles_paneHeadToken").getAttribute("title");
-  match(range, /^@a\.txt:1-\d+ "[\s\S]*"$/, `the selection ref is a range from line 1 with the selected text, got: ${range}`);
-  // COMMIT: the insert lands the exact ref in the composer, moves the caret
-  // there, and a repeat click is a no-op (the dedupe).
-  await u.page.mouse.click(box.x + 12, box.y + 10); // a fresh click ref (the drag's selection is gone)
+  match(range, /^@a\.txt:\d+-\d+ "[\s\S]*$/, `the selection ref is a range with the selected text, got: ${range}`);
+  // COMMIT: the insert lands the exact ref in the composer, and a repeat
+  // click is a no-op (the dedupe).
+  await cell.click(); // a fresh click ref (the drag's selection is gone)
   await u.until(async () => {
     const tk = await root.locator(".dswFiles_paneHeadToken").getAttribute("title").catch(() => null);
     return tk === token;
@@ -434,275 +495,137 @@ async function j8_clickRef(u) {
     return (txt || "").includes(token);
   }, "the ref lands in the composer draft");
   eq(await composer().textContent(), token + " ", "the draft is exactly the ref + its trailing space");
-  ok(await u.page.evaluate(() => !!document.activeElement && document.activeElement.hasAttribute("data-composer-input")), "the composer holds the caret after the insert");
   await insertBtn.click();
   await u.page.waitForTimeout(150);
   eq(await composer().textContent(), token + " ", "a repeat insert is a no-op (the dedupe)");
-  // Fullscreen: the right bar IS the window — the composer is mounted but
-  // covered. The insert hands the window back through the host's own exit
-  // control first, then commits and focuses.
-  await u.page.locator('[data-sidebar-right-mode="fullscreen"]').first().click();
-  await u.until(async () => (await u.page.locator('[data-sidebar-right-panel="fullscreen"]').count()) === 1, "the right bar enters fullscreen");
-  await u.page.waitForTimeout(300); // let the width transition settle before taking coordinates
-  const box2 = await root.locator("pre.dswFiles_previewText").boundingBox();
-  await u.page.mouse.click(box2.x + 12, box2.y + 28); // line 2
-  await u.until(async () => {
-    const tk = await root.locator(".dswFiles_paneHeadToken").getAttribute("title").catch(() => null);
-    return !!tk && tk.startsWith("@a.txt:2:");
-  }, "line 2's ref resolves in fullscreen (with its column)");
-  const token2 = await root.locator(".dswFiles_paneHeadToken").getAttribute("title");
-  await root.locator(".dswFiles_paneHeadBtns button[aria-label='Add ref to chat']").click();
-  await u.until(async () => (await u.page.locator('[data-sidebar-right-panel="fullscreen"]').count()) === 0, "the insert exits fullscreen");
-  await u.until(async () => {
-    const txt = await composer().textContent().catch(() => "");
-    return (txt || "").includes(token2);
-  }, "line 2's ref lands in the composer");
-  eq(await composer().textContent(), token + " " + token2 + " ", "both refs in the draft, one space apart");
-  ok(await u.page.evaluate(() => !!document.activeElement && document.activeElement.hasAttribute("data-composer-input")), "the composer holds the caret after the fullscreen insert");
   // Switching the file clears the ref back to the at-rest path.
-  await u.row("big.bin").click();
+  await u.fileRow("big.bin").click();
   await u.until(async () => (await root.locator(".dswFiles_paneHeadPath").count()) === 1, "big.bin head row back at rest");
   eq((await root.locator(".dswFiles_paneHeadPath").innerText()).trim(), "big.bin", "file switch → at-rest path, no stale ref");
   eq(await root.locator(".dswFiles_paneHeadToken").count(), 0, "file switch clears the ref token");
 }
 
-// J7: the SOFT-STICKY diff preference. A fresh selection opens as its
-// content (view/preview) — never as a diff, even for a VCS-changed file.
-// An explicit Diff pick ARMS the preference for the session, so the next
-// diffable selection starts in Diff with no click. An explicit View/Preview
-// pick disarms it (the last explicit choice wins). The preference is
-// in-memory only: a page reload drops it even while armed (J7's final
-// step), so a fresh load starts content-default again.
-async function j7_stickyDiff(u) {
-  const btn = (label) => u.root().locator(".dswFiles_paneToggleBtn", { hasText: new RegExp("^" + label + "$") });
-  const activeBtn = (label) => u.root().locator(".dswFiles_paneToggleBtnActive", { hasText: new RegExp("^" + label + "$") });
-  const rawText = () => u.root().locator(".dswFiles_previewText").innerText().catch(() => "").then((t) => t ?? "");
-  // 1) A fresh selection of a VCS-changed file opens as its content.
-  await u.row("a.txt").click();
-  await u.until(async () => (await rawText()).includes("one"), "a.txt opens in view by default (not diff)");
-  eq(await u.root().locator(".dswFiles_diff").count(), 0, "a fresh selection never starts in diff");
-  eq(await activeBtn("View").count(), 1, "View is the default active mode for a diffable text file");
-  // 2) The explicit Diff pick arms the soft-sticky preference.
-  await btn("Diff").first().click();
-  await u.until(async () => (await u.root().locator(".dswFiles_diff").count()) === 1, "a.txt renders its diff after the explicit pick");
-  eq(await activeBtn("Diff").count(), 1, "Diff is active after the pick");
-  // 3) The NEXT diffable selection starts in Diff — the stick, no click.
-  await u.row("doc.md").click();
-  await u.until(async () => (await u.root().locator(".dswFiles_diff").count()) === 1, "doc.md opens in Diff via the soft-sticky preference");
-  eq(await activeBtn("Diff").count(), 1, "Diff is active on the sticky selection without a click");
-  // 4) An explicit View pick disarms it (last explicit choice wins).
-  await btn("View").first().click();
-  await u.until(async () => (await rawText()).includes("# Doc"), "View shows doc.md's raw source");
-  // 5) The next selection is back to the content default.
-  await u.row("page.html").click();
-  await u.until(async () => (await rawText()).includes("<!doctype html>"), "page.html opens as raw view (preference disarmed)");
-  eq(await u.root().locator(".dswFiles_diff").count(), 0, "no diff after the disarming View pick");
-  eq(await activeBtn("View").count(), 1, "View is active again");
-  // 6) Re-arm, and the stick holds through a binary (image) file.
-  await btn("Diff").first().click();
-  await u.until(async () => (await u.root().locator(".dswFiles_diff").count()) === 1, "page.html renders its diff after the re-arm");
-  await u.row("pic.png").click();
-  await u.until(async () => (await u.root().locator(".dswFiles_diffBinaryRow").count()) === 1, "pic.png opens in Diff (the stick holds through a binary)");
-  // 7) A page reload DROPS the preference (in-memory, never persisted): the
-  //    restored selection (pic.png, J7's last pick) starts as content.
-  await u.page.reload({ waitUntil: "domcontentloaded" });
-  const expand = u.page.locator('[data-sidebar-right-expand]');
-  await u.until(async () => (await expand.count()) > 0, "conversation back after reload", 30_000);
-  await expand.click();
-  await u.until(async () => (await u.root().count()) === 1, "Files view back after reload", 30_000);
-  await u.until(async () => (await u.root().locator(".dswFiles_previewImage").count()) === 1, "the restored pic.png renders as content after reload");
-  eq(await u.root().locator(".dswFiles_diff").count(), 0, "the reload dropped the armed preference (no diff on restore)");
-  eq(await activeBtn("View").count(), 1, "View is active on the restored selection");
-}
-
-// J4: markdown — with nothing diffable (a VCS-less workspace) the preview is
-// the DEFAULT and renders: heading, bold, list, GFM table. A javascript: link
-// must not become an anchor (markdown-it's link validator drops it, the text
-// stays visible). A mermaid fence becomes a sealed frame holding an SVG.
-// View shows the raw source (fence markers) and unmounts the frame; toggling
-// back renders again.
-async function j4_markdown(u) {
-  await u.row("doc.md").click();
-  const md = u.root().locator(".dswFiles_previewMarkdown");
-  await u.until(async () => (await md.count()) > 0, "markdown preview is the default (no diff available)");
-  eq(await md.locator("h1").count(), 1, "md: heading rendered");
-  ok(await md.locator("strong").count() >= 1, "md: bold rendered");
-  ok(await md.locator("li").count() >= 1, "md: list rendered");
-  eq(await md.locator("table").count(), 1, "md: GFM table rendered");
-  eq(await md.locator('a[href^="javascript:"]').count(), 0, "md: javascript: link is not an anchor");
-  ok((await md.innerText()).includes("js link"), "md: the dropped link's text stays visible");
-  // Line refs in the RENDERED preview: filestab owns the markdown render, so
-  // it stamps each content block with its source line — a click resolves to
-  // the line (plus the column when the rendered text maps 1:1 onto the
-  // source), a selection to the line range. Formatted blocks (heading, bold,
-  // list, table) can't map rendered columns onto source columns — stripped
-  // markup shifts them — and stay line-only, never a wrong number.
-  // Fixture lines: 1:# Doc  3:A **bold** para.  5:- item  9:| a | b |
-  //                13:plain paragraph line
-  const token = u.root().locator(".dswFiles_paneHeadToken");
-  const title = () => token.getAttribute("title").catch(() => null);
-  await md.locator("h1").click();
-  await u.until(async () => (await title()) === "@doc.md:1", "click the heading → its line");
-  eq(await title(), "@doc.md:1", "md: formatted heading → line ref only (the # shifts the columns)");
-  await md.locator("strong").click();
-  await u.until(async () => (await title()) === "@doc.md:3", "click the paragraph → its line");
-  eq(await title(), "@doc.md:3", "md: formatted paragraph → line ref only (the ** shifts the columns)");
-  await md.locator("td", { hasText: "b" }).click();
-  await u.until(async () => (await title()) === "@doc.md:9", "click a table cell → the row's line");
-  eq(await title(), "@doc.md:9", "md: table cell → the row's line ref (the pipes shift the columns)");
-  await md.locator("li").click();
-  await u.until(async () => (await title()) === "@doc.md:5", "click the tight list item → its line");
-  eq(await title(), "@doc.md:5", "md: list item → line ref only (the - marker shifts the columns)");
-  // A PLAIN line renders byte-identical to its source → the click also
-  // carries the COLUMN (file:line:col).
-  await md.locator("p", { hasText: "plain paragraph line" }).click({ position: { x: 20, y: 8 } });
+// J21: commit selection (no list refresh) + Open in Files. The change tree
+// is READ-ONLY: selecting a commit swaps only the file pane for that
+// commit's changeset while the SAME tree element stays mounted (the old
+// behavior re-mounted the whole list — visually jarring). The head row
+// hands the viewed file off to the OFFICIAL file viewer.
+async function j21_commitSelection(u) {
+  const root = u.root();
+  const tree = u.root().locator(".dswFiles_changeTree");
+  await u.until(async () => (await tree.count()) > 0, "change tree");
+  const commitRows = tree.locator('button[data-files-change]:not([data-files-change="worktree"])');
+  eq(await commitRows.count(), 2, "the fixture's one commit + the root (the log's floor)");
+  const commitRow = commitRows.first();
+  const commitId = await commitRow.getAttribute("data-files-change");
+  // Selecting the commit must NOT re-render the change list (the old
+  // behavior re-fetched the root listing into snapshot mode and the whole
+  // tree re-mounted — visually jarring). The SAME tree element must
+  // survive the selection.
+  const treeHandle = await tree.elementHandle();
+  ok(treeHandle, "the change tree element exists before the selection");
+  await commitRow.click();
+  ok(await u.page.evaluate((el) => el.isConnected, treeHandle),
+    "selecting a commit keeps the SAME change tree element MOUNTED (no list refresh)");
+  eq(await tree.locator('button[data-files-change="worktree"]').getAttribute("data-files-change"), "worktree", "the worktree row is still the first row");
+  // Selecting the commit row SWAPS the file pane for that commit's own
+  // changeset: base.txt (the commit's content) and NOT the worktree's U
+  // files (they belong to the change above).
+  await u.until(async () => (await u.root().locator('li[data-files-change-file="base.txt"]').count()) === 1,
+    "the commit's file list (base.txt) replaces the worktree's");
+  eq(await u.fileRow("a.txt").count(), 0, "a worktree-only file is not in the commit's list");
+  eq(await u.root().locator('li[data-files-change-file="base.txt"] .dswFiles_badgeA').count(), 1, "base.txt is an A (added) in the commit's changeset");
+  match((await u.root().locator(".dswFiles_filesPaneHead").innerText()), /Changed files · 1/, "the caption counts the COMMIT's files");
+  // Commit mode: the diff is against the commit's parent, and a click ref
+  // pins the file AT the commit (the @<commit> part of the token).
+  await u.fileRow("base.txt").click();
+  await u.until(async () => (await root.locator(".dswFiles_diff").count()) === 1, "base.txt diff rendered (commit mode)");
+  await u.until(async () => ((await root.locator(".dswFiles_diff").innerText().catch(() => "")) ?? "").includes("the base"),
+    "commit-mode diff shows the committed content");
+  const ccell = root.locator('.dswFiles_diffCell[data-dn="1"]');
+  await u.until(async () => (await ccell.count()) === 1, "the first commit-mode diff line");
+  await ccell.click();
+  await u.until(async () => (await root.locator(".dswFiles_paneHeadToken").count()) === 1, "commit-mode click ref");
+  const commitToken = await root.locator(".dswFiles_paneHeadToken").getAttribute("title");
+  match(commitToken, new RegExp("^@base\\.txt@" + commitId + ":(\\d+)$"),
+    "the commit-mode ref pins the file AT the commit, got: " + commitToken);
+  // Restore the worktree selection before the file steps.
+  await tree.locator('button[data-files-change="worktree"]').click();
+  await u.until(async () => (await u.fileRow("a.txt").count()) === 1, "the worktree's file list is back");
+  ok(await u.page.evaluate((el) => el.isConnected, treeHandle), "the same change tree element survived the whole commit selection round-trip");
+  // Regression (the stuck-Loading report): the SECOND change selection
+  // while the first one's snapshot is still loaded (commit → the log's
+  // root, whose changeset is empty) used to hang on "Loading…" forever —
+  // the fetch effect reset `snapshot`, one of its own deps, before
+  // starting the fetch; the reset re-ran the effect, and that re-run's
+  // cleanup aborted the just-started fetch while the ref guard blocked
+  // the re-fetch. The root's empty changeset must land, and selecting
+  // back to the commit must land again.
+  await commitRows.nth(1).click();
+  await u.until(async () => (await u.root().locator("[data-files-change-files-empty]").count()) === 1,
+    "second selection (root, empty changeset) loads — no stuck Loading");
+  await commitRow.click();
+  await u.until(async () => (await u.root().locator('li[data-files-change-file="base.txt"]').count()) === 1,
+    "selecting back to the commit loads its list again");
+  // Leave the worktree selected for the Open-in-Files step (a.txt is
+  // worktree-only).
+  await tree.locator('button[data-files-change="worktree"]').click();
+  await u.until(async () => (await u.fileRow("a.txt").count()) === 1, "the worktree's file list is back");
+  // Open in Files: the head row's handoff opens the viewed file in the
+  // OFFICIAL file viewer (a stock file tab for it in the right column).
+  await u.fileRow("a.txt").click();
+  await u.until(async () => (await u.root().locator(".dswFiles_paneHeadPath").count()) === 1, "a.txt head row at rest");
+  const openBtn = u.root().locator(".dswFiles_paneHeadBtns button[aria-label='Open in Files']");
+  eq(await openBtn.count(), 1, "the head row carries the Open-in-Files handoff (↗)");
+  await openBtn.click();
   await u.until(async () => {
-    const tk = await title();
-    return !!tk && /^@doc\.md:13:\d+$/.test(tk);
-  }, "click a plain markdown line → its line AND column");
-  match(await title(), /^@doc\.md:13:[1-9]\d*$/, "md: plain line → the exact source column");
-  // A selection spanning lines 3-5 → the range ref with the selected text.
-  const sb = await md.locator("strong").boundingBox();
-  const lb = await md.locator("li").boundingBox();
-  await u.page.mouse.move(sb.x + 4, sb.y + sb.height / 2);
-  await u.page.mouse.down();
-  await u.page.mouse.move(lb.x + 8, lb.y + lb.height / 2, { steps: 4 });
-  await u.page.mouse.up();
-  await u.until(async () => {
-    const tk = await title();
-    return !!tk && tk.startsWith('@doc.md:3-5 "');
-  }, "selection across lines 3-5 → the range ref with the selected text");
-  match(await title(), /^@doc\.md:3-5 "[\s\S]*$/, "md: selection across lines → the range ref with the text");
-  // Mermaid fence → sealed frame, the SVG rendered INSIDE the frame.
-  const frame = u.root().locator(".dswFiles_mermaidFrame");
-  await u.until(async () => {
-    if (await frame.count() === 0) return false;
-    const f = frame.first().contentFrame(); // sync: Frame | null
-    return f ? (await f.locator("svg").count().catch(() => 0)) > 0 : false;
-  }, "mermaid SVG inside the sealed frame", 30_000);
-  // View → raw source (fence markers visible), the frame unmounts.
-  await viewMode(u);
-  const raw = u.root().locator(".dswFiles_previewText");
-  await u.until(async () => (await raw.count()) > 0, "view mode: raw markdown source");
-  ok((await raw.innerText()).includes("```mermaid"), "raw source shows the fence markers");
-  eq(await frame.count(), 0, "mermaid frame unmounted in view mode");
-  // Back to Preview: rendered again (the bytes were already fetched).
-  await u.root().locator(".dswFiles_paneToggleBtn", { hasText: /^Preview$/ }).first().click();
-  await u.until(async () => (await md.count()) > 0, "back to preview renders again");
+    const titles = await u.page.locator("[data-dockkit-tab-title]").allTextContents();
+    return titles.some((t) => t.trim() === "a.txt");
+  }, "a stock file tab for a.txt opens in the right column");
+  // Restore the changestab page tab for the journeys that follow (the stock
+  // file tab is now the right column's active tab, changestab's body unmounted).
+  await clickFilesTab(u.page);
 }
 
-// J5: HTML — the RAW view is the default (rendering HTML executes scripts:
-// an explicit opt-in). In the sealed preview the sandbox script runs IN the
-// frame only: it changes the frame's title, is blocked from writing the
-// parent (opaque origin), its fetch is blocked by the frame's CSP, and its
-// timer stops when the iframe unmounts.
-async function j5_htmlSandbox(u) {
-  const page = u.page;
-  let cspProbeHits = 0;
-  page.on("request", (r) => { if (r.url().includes("csp-probe")) cspProbeHits++; });
-  // Receive the frame's tick postMessages in the app origin.
-  await page.evaluate(() => {
-    window.addEventListener("message", (e) => {
-      const d = e && e.data;
-      if (d && typeof d.filezProbeTick === "number") window.__lastTick = d.filezProbeTick;
-    });
-  });
-  const appTitle = await page.title();
-  await u.row("page.html").click();
-  // Raw source is the default. The wait must be content-aware: the previous
-  // file's view-mode <pre> is still in the DOM while the new fetch is in
-  // flight, so existence alone returns instantly on stale content.
-  const raw = u.root().locator(".dswFiles_previewText");
-  await u.until(async () => ((await raw.innerText().catch(() => "")) ?? "").includes("<!doctype html>"), "html raw view is the default");
-  ok((await raw.innerText()).includes("<script>"), "raw HTML source is visible");
-  eq(await u.root().locator(".dswFiles_previewHtml").count(), 0, "no iframe before the opt-in");
-  // Opt in to the sealed render.
-  await u.root().locator(".dswFiles_paneToggleBtn", { hasText: /^Preview$/ }).first().click();
-  const iframe = u.root().locator(".dswFiles_previewHtml");
-  await iframe.waitFor({ state: "visible", timeout: 15_000 });
-  ok(((await u.root().locator(".dswFiles_previewHtmlNote").innerText()) ?? "").length > 0, "sealed-render note shown");
-  // The real Frame (evaluate/title live there); locator.contentFrame() only
-  // gives a FrameLocator, which cannot evaluate.
-  const f = await (await iframe.elementHandle()).contentFrame();
-  ok(!!f, "the preview iframe has a content frame");
-  await u.until(async () => (await f.evaluate("window.__ran").catch(() => false)), "sandbox script ran in the frame");
-  eq(await f.evaluate("document.title").catch(() => null), "rendered-ok", "frame title changed by the sandbox script");
-  eq(await page.title(), appTitle, "app title unchanged (the script cannot reach the app)");
-  const probe = await f.evaluate("window.__probeResult");
-  ok(String(probe).startsWith("parent-write-blocked"), `opaque origin blocked the parent write, got: ${probe}`);
-  eq(await page.evaluate("window.__filezProbe"), undefined, "no parent property leaked into the app");
-  // The timer ticks while the frame is alive, and stops after unmount.
-  // t1 is captured AFTER the unmount: a tick between an earlier capture and
-  // the unmount is a race (the frame is still alive then), and any tick
-  // after the capture is what "stopped" must rule out.
-  await u.until(async () => ((await page.evaluate("window.__lastTick")) ?? 0) >= 2, "frame timer ticking (postMessage)");
-  await u.row("hi.txt").click();
-  await u.until(async () => (await u.root().locator(".dswFiles_previewHtml").count()) === 0, "html iframe unmounted");
-  const t1 = await page.evaluate("window.__lastTick");
-  ok(typeof t1 === "number" && t1 >= 2, "ticks observed while the frame was alive");
-  await page.waitForTimeout(400);
-  eq(await page.evaluate("window.__lastTick"), t1, "timer stopped: no ticks after unmount");
-  eq(cspProbeHits, 0, "CSP blocked the fetch (no request left the frame)");
-}
-
-// J6: a PNG renders in pane from a data: URL (no HTTP file route).
-async function j6_imagePreview(u) {
-  await u.row("pic.png").click();
-  await viewMode(u);
-  const img = u.root().locator(".dswFiles_previewImage");
-  await img.waitFor({ state: "visible", timeout: 15_000 });
-  ok(((await img.getAttribute("src")) ?? "").startsWith("data:image/png;base64,"), "PNG rendered from a data: URL");
-}
-
-// J19: the nav column (rightmost browse list) collapses to give the preview
-// and diff the full width. The toggle is a STATE PAIR — exactly one control
-// on screen at a time, one per state (the dsh host's right-pane pattern one
-// level down): expanded → a HIDE button (») in the nav's own header, at the
-// edge it collapses; collapsed → a RESTORE button («) in the view bar's right
-// end. The view bar renders only while a file is viewed, and the collapse
-// invariant keeps the nav expanded whenever nothing is viewed, so a hidden
-// nav always has a view bar to carry its restore button. Collapsing unmounts
-// the browse pane + divider and the view pane goes flush to the pane's right
-// edge. The collapsed state persists across a reload.
+// J19: the nav column (the change tree + file list) collapses to give the
+// diff the full width. The toggle is a STATE PAIR — exactly one control on
+// screen at a time, one per state (the dsh host's right-pane pattern one
+// level down): expanded → a HIDE button in the nav's own header; collapsed →
+// a RESTORE button in the preview pane's top row. Collapsing unmounts the
+// nav pane + divider and the preview goes flush to the pane's right edge.
+// The collapsed state persists across a reload.
 async function j19_collapse(u) {
   const hideBtn = u.root().locator(".dswFiles_header .dswFiles_navToggle");
   const restoreBtn = u.root().locator(".dswFiles_paneToggle .dswFiles_navToggle");
-  // Journey precondition: at the fixture root with a file viewed.
-  await u.until(async () => (await u.rowNames()).includes("a.txt"), "a.txt listed (at the fixture root)");
-  await u.row("a.txt").click();
+  // Journey precondition: a file viewed (the head row gives the pane its
+  // width claim).
+  await u.until(async () => (await u.fileRow("a.txt").count()) === 1, "a.txt listed (worktree changes)");
+  await u.fileRow("a.txt").click();
   // Expanded state: the hide control sits in the nav's own header.
   await u.until(async () => (await hideBtn.count()) === 1, "hide control present in the nav header");
   eq(await restoreBtn.count(), 0, "no restore control while the nav is visible");
   eq(await hideBtn.getAttribute("aria-expanded"), "true", "hide control reports the nav expanded");
-  eq(await u.root().locator(".dswFiles_browsePane").count(), 1, "browse pane visible initially");
-  eq(await u.root().locator(".dswFiles_collapsedRail").count(), 0, "no edge rail (the toggle lives in the nav header / view bar)");
-  eq((await u.root().locator(".dswFiles_paneHead").innerText()).trim(), "a.txt", "the viewed file's name rides in the view bar");
+  eq(await u.root().locator(".dswFiles_browsePane").count(), 1, "nav pane visible initially");
+  eq((await u.root().locator(".dswFiles_paneHeadPath").innerText()).trim(), "a.txt", "the viewed file's name rides in the head row");
   await hideBtn.click();
-  await u.until(async () => (await u.root().locator(".dswFiles_browsePane").count()) === 0, "browse pane hidden when collapsed");
+  await u.until(async () => (await u.root().locator(".dswFiles_browsePane").count()) === 0, "nav pane hidden when collapsed");
   eq(await u.root().locator(".dswFiles_divider").count(), 0, "divider hidden when collapsed");
-  // Collapsed state: the restore control sits in the view bar's right end.
-  await u.until(async () => (await restoreBtn.count()) === 1, "restore control present in the view bar");
+  // Collapsed state: the restore control sits in the preview's top row.
+  await u.until(async () => (await restoreBtn.count()) === 1, "restore control present in the preview top row");
   eq(await hideBtn.count(), 0, "no hide control while the nav is hidden");
   eq(await restoreBtn.getAttribute("aria-expanded"), "false", "restore control reports the nav collapsed");
-  // The view pane took the nav's place flush to the pane's right edge.
+  // The preview took the nav's place flush to the pane's right edge.
   const pb = await u.root().locator(".dswFiles_previewPane").boundingBox();
   const rb = await u.root().boundingBox();
-  ok(Math.abs((pb.x + pb.width) - (rb.x + rb.width)) <= 1, "view pane flush at the pane's right edge when collapsed");
+  ok(Math.abs((pb.x + pb.width) - (rb.x + rb.width)) <= 1, "preview pane flush at the pane's right edge when collapsed");
   await restoreBtn.click();
-  await u.until(async () => (await u.root().locator(".dswFiles_browsePane").count()) === 1, "browse pane restored");
+  await u.until(async () => (await u.root().locator(".dswFiles_browsePane").count()) === 1, "nav pane restored");
   // Persistence: collapse, reload, still collapsed (the restored selection
-  // keeps the preference in force from the first render). 0.1.5 note: the
-  // right pane's OPEN state is host UI state that a full page reload drops
-  // (the sidebar reboots collapsed), so reopen it through the host's own
-  // expand button; the filestab state (selection + collapsed nav) comes back
-  // from its own storage on the first render.
+  // keeps the preference in force from the first render).
   await hideBtn.click();
   await u.until(async () => (await u.root().locator(".dswFiles_browsePane").count()) === 0, "collapsed again");
   await u.page.reload({ waitUntil: "domcontentloaded" });
-  const expand = u.page.locator('[data-sidebar-right-expand]');
-  await u.until(async () => (await expand.count()) > 0, "conversation back after reload", 30_000);
-  await expand.click();
-  await u.until(async () => (await u.root().count()) === 1, "Files view back after reload", 30_000);
+  await u.ensurePaneOpen();
   eq(await u.root().locator(".dswFiles_browsePane").count(), 0, "collapsed state survives reload");
   await u.until(async () => (await restoreBtn.count()) === 1, "restore control back (selection restored)");
   // Leave it expanded for any later journeys.
@@ -710,44 +633,177 @@ async function j19_collapse(u) {
   await u.until(async () => (await u.root().locator(".dswFiles_browsePane").count()) === 1, "restored for later journeys");
 }
 
-// J1.2: a workspace with no VCS -- same layout, no status line, no badges.
+// J1.2: a workspace with no VCS -- no change tree, the non-VCS note with
+// its hint and the handoff to the official file viewer.
 async function j1_2_plain(u) {
-  await u.until(async () => (await u.rowNames()).includes("hi.txt"), "plain listing");
-  eq(await u.root().locator(".dswFiles_statusLine").count(), 0, "no VCS status line without a repo");
-  // The current row model renders no letter slot at all for a change-less
-  // file, so assert absence (a .first().innerText() would hang forever).
-  eq(await u.root().locator(".dswFiles_row .dswFiles_badge").count(), 0, "no change badges without VCS");
-  const footer = await u.root().locator(".dswFiles_footerBar").innerText();
-  ok(footer.includes("3 items"), `footer counts 3 items, got: ${footer.replace(/\n/g, " ")}`);
-  ok((await u.previewText()).includes("Select a file to preview"), "preview starts empty");
+  eq(await u.root().locator(".dswFiles_changeTree").count(), 0, "no change tree without a repo");
+  await u.until(async () => (await u.root().locator(".dswFiles_noVcs").count()) === 1, "the non-VCS note");
+  ok((await u.root().locator(".dswFiles_noVcsText").innerText()).includes("no initialized repository"), "the note names the missing repo");
+  ok((await u.root().locator(".dswFiles_noVcsHint").innerText()).length > 0, "the note carries the init hint");
+  eq(await u.root().locator("button[data-files-open-files-tab]").count(), 1, "the note offers the Files handoff");
+  eq(await u.root().locator(".dswFiles_badge").count(), 0, "no change badges without VCS");
+  ok((await u.previewText()).includes("Select a changed file to view its diff"), "preview starts empty");
 }
 
-// J20: live file updates, no user action. A file edited on disk refreshes the
-// OPEN preview (the tick's open-file gate sees the disk mtime move and bumps
-// the content epoch; the preview re-fetches the bytes). A brand-new file
-// appears in the list with the unadded (U) badge (jj auto-snapshots it, so a
-// worktree add IS the unadded state — the git `??` parity the markers carry).
-// Runs on its OWN fresh session (a first Files-view mount, empty nav cache)
-// — a remounted view (e.g. after collapse/expand) would start with cached
-// listings and mask a dead first-mount tick interval.
+// J20: live file updates, no user action. A file edited on disk refreshes
+// the OPEN DIFF (the tick sees the worktree change and bumps the status;
+// the preview re-fetches the patch). A brand-new file appears in the
+// changed-file list with the unadded (U) badge. Runs on its OWN fresh
+// session (a first Files-view mount, empty nav cache) — a remounted view
+// would start with cached state and mask a dead first-mount tick interval.
 async function j20_liveUpdates(u, ws) {
-  await u.row("a.txt").click();
-  const raw = u.root().locator("pre.dswFiles_previewText");
-  await u.until(async () => (await raw.innerText().catch(() => "")).includes("two"), "a.txt open in raw view");
-  // External writer edits the open file. The next tick's open-file gate
-  // (disk mtime vs the mtime the view holds) trips → content-epoch bump →
-  // re-fetch. No click, no reload, no re-selection.
+  await u.fileRow("a.txt").click();
+  await u.until(async () => (await u.root().locator(".dswFiles_diff").count()) === 1, "a.txt diff rendered");
+  await u.until(async () => ((await u.root().locator(".dswFiles_diff").innerText().catch(() => "")) ?? "").includes("two"), "a.txt diff shows its content");
+  // External writer edits the open file. The next tick's worktree gate
+  // trips → status bump → patch re-fetch. No click, no reload, no
+  // re-selection.
   writeFileSync(join(ws, "a.txt"), "one\ntwo\nthree (edited on disk)\n");
-  await u.until(async () => (await raw.innerText()).includes("three (edited on disk)"),
-    "the open preview auto-refreshed the live edit", 20_000);
-  // A new file shows up in the list. The tick's shallow gate CANNOT see it
-  // (a worktree edit touches no VCS metadata), so it arrives on the deep
-  // cycle — every 3rd tick, a ≤15 s horizon — and carries U.
+  await u.until(async () => ((await u.root().locator(".dswFiles_diff").innerText().catch(() => "")) ?? "").includes("three (edited on disk)"),
+    "the open diff auto-refreshed the live edit", 20_000);
+  // A new file shows up in the changed-file list (a worktree add is a
+  // worktree change — the tick's deep cycle catches it) and carries U.
   writeFileSync(join(ws, "fresh.txt"), "brand new\n");
-  await u.until(async () => (await u.rowNames()).includes("fresh.txt"),
-    "the new file's row appears via the deep tick cycle", 25_000);
-  eq((await u.row("fresh.txt").locator(".dswFiles_badge").innerText()).trim(), "U",
+  await u.until(async () => (await u.root().locator('li[data-files-change-file="fresh.txt"]').count()) === 1,
+    "the new file's row appears in the changed list", 25_000);
+  eq(await u.root().locator('li[data-files-change-file="fresh.txt"] .dswFiles_badgeU').count(), 1,
     "fresh.txt carries the U (unadded) badge");
+}
+
+// J22: the nav's horizontal divider — the change log (top) and the
+// changed-file list (bottom) resize. The drag moves the log pane's height
+// directly (no re-render per pointermove); the height commits to the
+// persisted view state on release (it survives a reload); a double-click
+// restores the 240px default.
+async function j22_dividerDrag(u) {
+  const root = u.root();
+  const divider = root.locator(".dswFiles_hDivider");
+  await u.until(async () => (await divider.count()) === 1, "the log/files divider");
+  const pane = root.locator(".dswFiles_logPane");
+  const before = await pane.boundingBox();
+  ok(before && before.height > 0, "the log pane has a starting height");
+  // A drag of dy px from wherever the pane currently sits.
+  const dragBy = async (dy) => {
+    const start = (await pane.boundingBox()).height;
+    const hb = await divider.boundingBox();
+    await u.page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+    await u.page.mouse.down();
+    await u.page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2 + dy, { steps: 5 });
+    await u.page.mouse.up();
+    await u.until(async () => Math.abs((await pane.boundingBox()).height - (start + dy)) <= 3,
+      `the log pane height committed (+${dy}px) after the drag`);
+    return start;
+  };
+  const firstStart = await dragBy(60);
+  const after = await pane.boundingBox();
+  ok(Math.abs((after.height - firstStart) - 60) <= 3,
+    `the drag grew the log pane by ~60px (got +${(after.height - firstStart).toFixed(0)}px)`);
+  // Double-click restores the CSS default (240px).
+  await divider.dblclick();
+  await u.until(async () => Math.abs((await pane.boundingBox()).height - 240) <= 1,
+    "double-click → the default log-pane height (240px)");
+  // Persistence: drag again, reload, the height survives (the saved treeH).
+  const secondStart = await dragBy(40);
+  await u.page.reload({ waitUntil: "domcontentloaded" });
+  await u.ensurePaneOpen();
+  await u.until(async () => (await root.locator(".dswFiles_hDivider").count()) === 1, "the divider back after the reload");
+  const restored = await pane.boundingBox();
+  ok(Math.abs(restored.height - (secondStart + 40)) <= 2,
+    `the dragged height persists across the reload (got ${restored.height.toFixed(0)}px, want ~${secondStart + 40}px)`);
+}
+
+// J23: branching — the shape a user reported. `base` FORKS into two
+// children: `fork child 1` (the OFF-PATH branch — a leaf that never
+// re-enters the worktree's lineage) and `fork child 2` (the worktree side,
+// where the working copy sits). The off-path branch is the regression this
+// pins: the old host revset `ancestors(@-)` rendered only the worktree's
+// ancestry, so a fork child with no descendant back on the path was pruned
+// and never showed. The host now uses jj's own default log scope
+// (`builtin_log() ~ @` — exactly what a plain `jj log` shows), so the
+// off-path branch renders on its own lane. Rows key on the COMMIT id but
+// select by the CHANGE id; a plain branch is NOT divergent, so no
+// (divergent)/(hidden) labels or /N offsets render (that path is unit-tested).
+async function j23_branching(u) {
+  const root = u.root();
+  const tree = root.locator(".dswFiles_changeTree");
+  await u.until(async () => (await tree.count()) > 0, "change tree");
+  const rows = root.locator("button[data-files-change]");
+  eq(await rows.count(), 4, "fork: worktree + fork child 1 + base + root");
+  const wtText = ((await root.locator('[data-files-change="worktree"]').innerText()) || "").replace(/\n/g, " ");
+  ok(wtText.includes("Editing") && wtText.includes("fork child 2"), `worktree row = the worktree-side fork child, got: ${wtText}`);
+  // The OFF-PATH branch (fork child 1) — the commit the old revset pruned —
+  // renders as a row, and the shared parent (the branch point) is the last row.
+  const descs = await rows.evaluateAll((els) => els.map((e) => ((e.querySelector(".dswFiles_changeDesc") || {}).textContent || "")));
+  ok(descs.includes("fork child 1"), `the OFF-PATH branch renders as a row (got ${JSON.stringify(descs)})`);
+  eq(descs[2], "base", "the branch point (shared parent) is the 3rd row (the root is now the last): " + JSON.stringify(descs));
+  eq(descs.length, 4, "the root is the log's final row (4 rows total)");
+  // The fork opens a SECOND lane: the off-path branch sits beside the
+  // worktree's line. The lane count is the visible proof.
+  match(await tree.getAttribute("style") || "", /--filez-lanes:\s*2/, "the off-path branch sits on a separate lane");
+  eq(await root.locator(".dswFiles_rowLanes").count(), 4, "every row (incl. the root) carries the lane column");
+  // A plain branch is not divergent: no labels, no /N offsets.
+  eq(await root.locator(".dswFiles_changeLabel").count(), 0, "no divergent/hidden labels on a plain branch");
+  eq(await root.locator(".dswFiles_changeIdOff").count(), 0, "no /N change offset on a non-divergent branch");
+  // The fork children's bookmarks render as pills on their rows.
+  const pillTexts = await root.locator(".dswFiles_changePill").evaluateAll((els) => els.map((e) => e.textContent.trim()));
+  for (const bm of ["base", "c1", "c2"]) ok(pillTexts.includes(bm), `bookmark pill renders: ${bm} (got ${JSON.stringify(pillTexts)})`);
+  // Select the OFF-PATH branch by its CHANGE id: the file list switches to
+  // that change's snapshot and its file's diff renders.
+  const c1row = rows.filter({ hasText: "fork child 1" });
+  await c1row.click();
+  await u.until(async () => (await root.locator('li[data-files-change-file="c1.txt"]').count()) === 1, "the off-path branch's snapshot file list");
+  await u.fileRow("c1.txt").click();
+  await u.until(async () => ((await root.locator(".dswFiles_diff").innerText().catch(() => "")) ?? "").includes("child one"), "the off-path branch's file diff renders");
+  // Back to the worktree: the worktree-side change's own file lists again.
+  await root.locator('[data-files-change="worktree"]').click();
+  await u.until(async () => (await root.locator('li[data-files-change-file="c2.txt"]').count()) === 1, "worktree selection: back to the worktree's changed file");
+}
+
+// J24: the change log's scroll auto-load. The fixture has 54 real commits +
+// the root (55 rows); the first page carries 50, so scrolling the log's own
+// scroll region to the bottom fetches the remaining 5 (4 commits + the root,
+// the log's floor) and appends them (no "load less"). A short page exhausts
+// the log — scrolling again appends nothing.
+async function j24_pagination(u) {
+  const root = u.root();
+  const rows = root.locator("button[data-files-change]");
+  // The first page: the worktree row + the host's first 50 commits.
+  await u.until(async () => (await rows.count()) === 51, "first page rendered (worktree + 50 commits)");
+  const descsOf = () => rows.evaluateAll((els) => els.map((e) => ((e.querySelector(".dswFiles_changeDesc") || {}).textContent || "")));
+  const firstDescs = await descsOf();
+  ok(firstDescs.includes("log-c54"), "the newest commit (log-c54) is on the first page");
+  ok(!firstDescs.includes("log-c1"), "the oldest commit (log-c1) is beyond page 0 (not yet loaded)");
+  // The log's own scroll region: 51 rows overflow the 240px pane, so it
+  // scrolls. Drive it to the bottom — within 48px of the end the auto-load
+  // fires and appends the next page.
+  const scroller = root.locator(".dswFiles_tree").first();
+  const scrollable = await scroller.evaluate((el) => el.scrollHeight > el.clientHeight + 50);
+  ok(scrollable, "the log pane overflows (scrollable) with 51 rows: " + JSON.stringify(await scroller.evaluate((el) => ({ sh: el.scrollHeight, ch: el.clientHeight }))));
+  await scroller.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await u.until(async () => (await rows.count()) === 56, "the next page auto-loads on scroll (worktree + 54 commits + root)");
+  const allDescs = await descsOf();
+  ok(allDescs.length === 56, "56 rows total after the append");
+  ok(allDescs.includes("log-c1"), "the oldest commit (log-c1) loaded after scrolling");
+  // The ROOT is the log's floor: it renders as the last row with a localized
+  // "root" label in the date slot — NOT the root's epoch author date. The
+  // "no 1970" check is locale-independent (en "root" / zh "根修订", neither
+  // carries the epoch year the bare whenOf would render).
+  const rootRow = root.locator('[data-files-change="zzzzzzzzzzzz"]');
+  ok((await rootRow.count()) === 1, "the root row renders (the log's floor)");
+  const rootWhen = ((await rootRow.locator(".dswFiles_changeWhen").innerText().catch(() => "")) || "").trim();
+  ok(rootWhen.length > 0 && !rootWhen.includes("1970"), "the root row's date slot is a label, not the epoch date: " + JSON.stringify(rootWhen));
+  // The root is the log's floor: no line may extend below it. A dangling
+  // "parent outside the window" edge is clipped at the floor (see the layout
+  // unit test); in this straight-history fixture the floor row is a single
+  // lane, so this asserts the rendered floor has no vB segment (a guard against
+  // a line regressing back to running off the bottom edge).
+  const rootLaneVB = await rootRow.locator(".dswFiles_laneV.dswFiles_vB").count();
+  ok(rootLaneVB === 0, "the root row has no line below it (no vB segment): " + rootLaneVB);
+  // The appended page was short (5 < 50) → the log is exhausted. Scrolling
+  // again appends nothing (no "load less", no duplicate rows).
+  await scroller.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await u.page.waitForTimeout(600);
+  eq(await rows.count(), 56, "an exhausted log appends nothing further (no re-load)");
 }
 
 // ── main ───────────────────────────────────────────────────────────────────
@@ -755,7 +811,7 @@ async function j20_liveUpdates(u, ws) {
 async function main() {
   // Fail loud and cheap (before any boot or model call) if dsh moved on.
   checkDshVersion();
-  const root = join(tmpdir(), `filestab-e2e-${randomBytes(4).toString("hex")}`);
+  const root = join(tmpdir(), `changestab-e2e-${randomBytes(4).toString("hex")}`);
   mkdirSync(root, { recursive: true });
   let dsh = null;
   let browser = null;
@@ -768,22 +824,20 @@ async function main() {
     console.log(`e2e: dsh web on ${url.replace(/token=[^\s]+/, "token=…")}`);
     browser = await chromium.launch({ executablePath: findChrome(), headless: true, args: ["--no-sandbox"] });
 
-    // F-JJ session: J1, J3, J8, J7, J6, J19.
+    // F-JJ session: J1, J8, J21, J19.
     const a = await openSession(browser, { url, workspace: fx.fj });
     const ua = ui(a.page);
     await clickFilesTab(a.page);
     console.log("e2e: J1 first look (jj workspace)");
     await j1_firstLook(ua);
-    console.log("e2e: J3 text preview (+ >1MB card)");
-    await j3_textPreview(ua);
     console.log("e2e: J8 click → ref in the head row");
     await j8_clickRef(ua);
-    console.log("e2e: J7 soft-sticky diff preference");
-    await j7_stickyDiff(ua);
-    console.log("e2e: J6 image preview");
-    await j6_imagePreview(ua);
+    console.log("e2e: J21 commit selection (no list refresh) + Open in Files");
+    await j21_commitSelection(ua);
     console.log("e2e: J19 nav-pane collapse/expand (state pair)");
     await j19_collapse(ua);
+    console.log("e2e: J22 the log/files divider drag + persistence");
+    await j22_dividerDrag(ua);
     checkConsole(a, "fj");
     await a.context.close();
 
@@ -793,10 +847,6 @@ async function main() {
     await clickFilesTab(b.page);
     console.log("e2e: J1.2 first look (no VCS)");
     await j1_2_plain(ub);
-    console.log("e2e: J4 markdown preview (plain workspace)");
-    await j4_markdown(ub);
-    console.log("e2e: J5 html sandboxed preview (plain workspace)");
-    await j5_htmlSandbox(ub);
     checkConsole(b, "plain");
     await b.context.close();
 
@@ -810,7 +860,25 @@ async function main() {
     checkConsole(c, "fj20");
     await c.context.close();
 
-    console.log(`e2e: PASS -- ${assertions} assertions across J1, J1.2, J3, J4, J5, J6, J7, J8, J19, J20`);
+    // F-JJ-FORK session: J23 on its own fresh mount (the branch point).
+    const d = await openSession(browser, { url, workspace: fx.fjf });
+    const ud = ui(d.page);
+    await clickFilesTab(d.page);
+    console.log("e2e: J23 branching (the branch point, two lanes)");
+    await j23_branching(ud);
+    checkConsole(d, "fjf");
+    await d.context.close();
+
+    // F-JJ-LOG session: J24 on its own fresh mount (the 55-commit log).
+    const e = await openSession(browser, { url, workspace: fx.fjlog });
+    const ue = ui(e.page);
+    await clickFilesTab(e.page);
+    console.log("e2e: J24 pagination (scroll auto-load of the change log)");
+    await j24_pagination(ue);
+    checkConsole(e, "fjlog");
+    await e.context.close();
+
+    console.log(`e2e: PASS -- ${assertions} assertions across J1, J1.2, J8, J19, J20, J21, J22, J23, J24`);
   } catch (e) {
     // Best-effort failure screenshot, then clean up and rethrow.
     const pages = browser ? [...browser.contexts().flatMap((c) => c.pages())] : [];

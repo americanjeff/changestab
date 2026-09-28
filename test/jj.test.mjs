@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import assert from "node:assert";
-import { jj, parseSummary, parseHead, parseCommitLog, parseConflicts, insideWorkspace, jjWorkspaceStatus } from "../dist/jj.js";
+import { jj, parseSummary, parseHead, parseCommitLog, parseConflicts, insideWorkspace, jjWorkspaceStatus, jjLogPage } from "../dist/jj.js";
 import { snapshotDirListing } from "../dist/snapshot.js";
 import { __test } from "../dist/index.js";
 
@@ -36,30 +36,70 @@ assert.deepStrictEqual(parseSummary("M my file.txt"),
 assert.deepStrictEqual(parseSummary(""), [], "empty input");
 assert.deepStrictEqual(parseSummary("junk line\n\n  \n"), [], "unknown lines skipped");
 
-assert.deepStrictEqual(parseHead("f11e978bb855\tstep2\n"), { id: "f11e978bb855", description: "step2" }, "head with desc");
-assert.deepStrictEqual(parseHead("f11e978bb855\t\n"), { id: "f11e978bb855", description: "" }, "head, empty desc");
+// TSV shape (HEAD_TSV, 13 cols): commit-id \t change-id \t prefix \t rest
+// \t bookmarks \t tags \t workspaces \t hidden(0|1) \t divergent(0|1)
+// \t change-offset \t tracking \t parents (commit ids) \t first-line
+// (description LAST). id = commit id, changeId = the worktree's change id,
+// parents = the head's parent COMMIT ids.
+assert.deepStrictEqual(parseHead("f11e978bb855\tqpslqqptwxyz\t\t\t\t\t\t0\t0\t0\t\t\tstep2\n"),
+  { id: "f11e978bb855", changeId: "qpslqqptwxyz", idPrefix: "", idRest: "", parents: [], bookmarks: [], tags: [], workspaces: [], hidden: false, divergent: false, offset: 0, tracking: [], description: "step2" }, "head with desc");
+assert.deepStrictEqual(parseHead("f11e978bb855\tqpslqqptwxyz\tqpslqq\tptwxyz\tdev,main\tv1\tws1,ws2\t0\t0\t0\tdev@origin:2/1\t111111111111 222222222222\tnote\n"),
+  { id: "f11e978bb855", changeId: "qpslqqptwxyz", idPrefix: "qpslqq", idRest: "ptwxyz", parents: ["111111111111", "222222222222"], bookmarks: ["dev", "main"], tags: ["v1"], workspaces: ["ws1", "ws2"], hidden: false, divergent: false, offset: 0, tracking: [{ name: "dev", remote: "origin", ahead: 2, behind: 1 }], description: "note" }, "head refs + workspaces + tracking + commit-id parents + shortest(8) split parsed");
+assert.deepStrictEqual(parseHead("f11e978bb855\tqpslqqptwxyz\tqpslqq\tptwxyz\tdev*?\t\t\t1\t1\t2\tdev@origin:-1/3\t111111111111\tnote\n"),
+  { id: "f11e978bb855", changeId: "qpslqqptwxyz", idPrefix: "qpslqq", idRest: "ptwxyz", parents: ["111111111111"], bookmarks: ["dev*?"], tags: [], workspaces: [], hidden: true, divergent: true, offset: 2, tracking: [{ name: "dev", remote: "origin", ahead: -1, behind: 3 }], description: "note" }, "head sigil bookmark + hidden + divergent + offset + negative ahead parsed");
 assert.strictEqual(parseHead(""), null, "head, no input");
 assert.strictEqual(parseHead("no tab here\n"), null, "head, no TSV line");
 
-// TSV shape: change-id \t empty-flag(0|1) \t first-line (the flag column is
-// anchored, so a tab inside the description stays put).
-assert.deepStrictEqual(parseCommitLog("abc123def456\t0\tfix the parser\n"),
-  [{ id: "abc123def456", empty: false, description: "fix the parser" }], "commit log, one entry");
-assert.deepStrictEqual(parseCommitLog("abc123def456\t1\t\n"),
-  [{ id: "abc123def456", empty: true, description: "" }], "commit log, (empty) + no desc");
-assert.deepStrictEqual(parseCommitLog("abc123def456\t1\twip\n"),
-  [{ id: "abc123def456", empty: true, description: "wip" }], "commit log, (empty) + desc");
-assert.deepStrictEqual(parseCommitLog("abc123def456\t0\t\n"),
-  [{ id: "abc123def456", empty: false, description: "" }], "commit log, no desc only");
-assert.deepStrictEqual(parseCommitLog("abc123def456\t0\tfix\twith tabs\n"),
-  [{ id: "abc123def456", empty: false, description: "fix\twith tabs" }], "tab in description survives");
-assert.deepStrictEqual(parseCommitLog("zzzzzzzzzzzz\t1\t\n"), [], "root revision filtered");
-assert.deepStrictEqual(parseCommitLog("Warning: something\nabc123def456\t0\tfirst\n\n"),
-  [{ id: "abc123def456", empty: false, description: "first" }], "non-TSV lines skipped");
+// TSV shape (LOG_TSV, 18 cols): change-id \t commit-id \t id-prefix \t
+// id-rest \t glyph (@/◆/×/○, jj's node character) \t conflict(0|1) \t
+// empty(0|1) \t author \t date \t bookmarks \t tags \t workspaces \t
+// hidden(0|1) \t divergent(0|1) \t change-offset \t tracking \t parents
+// (commit ids) \t first-line (the fixed columns are anchored, so a tab
+// inside the description stays put).
+const row = (o) => ({ id: "abc123def456", commitId: "f11e978bb855", idPrefix: "", idRest: "", glyph: "○", conflict: false, empty: false, root: false, author: "", date: "", bookmarks: [], tags: [], workspaces: [], hidden: false, divergent: false, offset: 0, tracking: [], parents: [], description: "", ...o });
+assert.deepStrictEqual(parseCommitLog("abc123def456\tf11e978bb855\tabc\t123def456\t○\t0\t0\ta@b.com\t2026-01-02T03:04:05\t\t\t\t0\t0\t0\t\tzzzzzzzzzzzz\tfix the parser\n"),
+  [row({ idPrefix: "abc", idRest: "123def456", author: "a@b.com", date: "2026-01-02T03:04:05", parents: ["zzzzzzzzzzzz"], description: "fix the parser" })], "commit log, one entry");
+assert.deepStrictEqual(parseCommitLog("abc123def456\tf11e978bb855\tab\tcdef456\t×\t1\t1\t\t\t\t\t\t0\t0\t0\t\t\t\n"),
+  [row({ idPrefix: "ab", idRest: "cdef456", glyph: "×", conflict: true, empty: true })], "commit log, conflict node × + (empty) + no desc");
+assert.deepStrictEqual(parseCommitLog("abc123def456\tf11e978bb855\tab\tcdef456\t◆\t0\t0\t\t\t\t\t\t0\t0\t0\t\t\t\n"),
+  [row({ idPrefix: "ab", idRest: "cdef456", glyph: "◆" })], "commit log, immutable node ◆");
+assert.deepStrictEqual(parseCommitLog("abc123def456\tf11e978bb855\t\t\t\t0\t0\t\t\t\t\t\t0\t0\t0\t\t\t\n"),
+  [row({})], "commit log, no desc only (empty glyph column → ○ fallback)");
+assert.deepStrictEqual(parseCommitLog("abc123def456\tf11e978bb855\tabc\t123def456\t@\t0\t0\ta@b.com\t2026-01-02T03:04:05\tdev,main\tv1\twsA\t0\t0\t0\t\tmmmmmmmmmmmm nnnnnnnnnnnn\tfix\twith tabs\n"),
+  [row({ idPrefix: "abc", idRest: "123def456", glyph: "@", author: "a@b.com", date: "2026-01-02T03:04:05", bookmarks: ["dev", "main"], tags: ["v1"], workspaces: ["wsA"], parents: ["mmmmmmmmmmmm", "nnnnnnnnnnnn"], description: "fix\twith tabs" })],
+  "working-copy node @ + refs + workspace + two parents + tab in description survive");
+// The CLI's ref sigils ride in the bookmark strings (unsynced local `*`,
+// conflicted `??`, remote `name@remote`) — parsed verbatim, tracking is
+// separate data keyed by name@remote.
+assert.deepStrictEqual(parseCommitLog("abc123def456\tf11e978bb855\tabc\t123def456\t○\t0\t0\t\t\tmain*,feat??,dev@origin\t\t\t0\t0\t0\tdev@origin:3/0,main@origin:0/4\tzzzzzzzzzzzz\trefs\n"),
+  [row({ idPrefix: "abc", idRest: "123def456", bookmarks: ["main*", "feat??", "dev@origin"], tracking: [{ name: "dev", remote: "origin", ahead: 3, behind: 0 }, { name: "main", remote: "origin", ahead: 0, behind: 4 }], parents: ["zzzzzzzzzzzz"], description: "refs" })],
+  "sigils verbatim + two tracking pairs parsed");
+// A divergent change: the /N offset + flag (hidden takes precedence in the
+// RENDER, but both flags are parsed).
+assert.deepStrictEqual(parseCommitLog("ws1xskmq0000\tf11e978bb855\tws1xsk\tmq0000\t○\t0\t0\t\t\t\t\t\t0\t1\t1\t\t3efe5a9e1234\tchild of the fork\n"),
+  [row({ id: "ws1xskmq0000", idPrefix: "ws1xsk", idRest: "mq0000", divergent: true, offset: 1, parents: ["3efe5a9e1234"], description: "child of the fork" })],
+  "divergent flag + change offset parsed");
+assert.deepStrictEqual(parseCommitLog("ws1xskmq0000\tf11e978bb855\tws1xsk\tmq0000\t○\t0\t0\t\t\t\t\t\t1\t1\t0\t\tdb4302681234\t\n"),
+  [row({ id: "ws1xskmq0000", idPrefix: "ws1xsk", idRest: "mq0000", hidden: true, divergent: true, offset: 0, parents: ["db4302681234"] })],
+  "hidden + divergent + offset 0 parsed (empty desc)");
+// Malformed tracking pairs are skipped, never fatal.
+assert.deepStrictEqual(parseCommitLog("abc123def456\tf11e978bb855\t\t\t\t0\t0\t\t\t\t\t\t0\t0\t0\tgarbage,dev@origin:1/0\t\t\n"),
+  [row({ tracking: [{ name: "dev", remote: "origin", ahead: 1, behind: 0 }] })], "malformed tracking pair skipped");
+assert.deepStrictEqual(parseCommitLog("zzzzzzzzzzzz\tf11e978bb855\tz\tzzzzzzzzz\t◆\t0\t1\t\t\t\t\t\t0\t0\t0\t\t\t\n"),
+  [row({ id: "zzzzzzzzzzzz", idPrefix: "z", idRest: "zzzzzzzzz", glyph: "◆", empty: true, root: true })],
+  "the root revision is INCLUDED as the log's floor (root flag, empty, ◆)");
+assert.deepStrictEqual(parseCommitLog("Warning: something\nabc123def456\tf11e978bb855\t\t\t\t0\t0\t\t\t\t\t\t0\t0\t0\t\t\tfirst\n\n"),
+  [row({ description: "first" })], "non-TSV lines skipped");
 assert.deepStrictEqual(
-  parseCommitLog(Array.from({ length: 60 }, (_, i) => "a" + String(i).padStart(11, "0") + "\t0\td" + i).join("\n")),
-  Array.from({ length: 50 }, (_, i) => ({ id: "a" + String(i).padStart(11, "0"), empty: false, description: "d" + i })),
+  parseCommitLog(Array.from({ length: 60 }, (_, i) => "a" + String(i).padStart(11, "0") + "\tf11e978bb855\t\t\t\t0\t0\t\t\t\t\t\t0\t0\t0\t\t\td" + i).join("\n")),
+  Array.from({ length: 50 }, (_, i) => row({ id: "a" + String(i).padStart(11, "0"), description: "d" + i })),
   "capped at 50 entries");
+// An explicit cap (the page functions pass `need`, so a page deeper than the
+// legacy 50-row default is not truncated): a 60-line feed with cap 55 yields 55.
+assert.deepStrictEqual(
+  parseCommitLog(Array.from({ length: 60 }, (_, i) => "a" + String(i).padStart(11, "0") + "\tf11e978bb855\t\t\t\t0\t0\t\t\t\t\t\t0\t0\t0\t\t\td" + i).join("\n"), 55),
+  Array.from({ length: 55 }, (_, i) => row({ id: "a" + String(i).padStart(11, "0"), description: "d" + i })),
+  "explicit cap 55 (a page deeper than the legacy 50)");
 
 assert.deepStrictEqual(
   snapshotDirListing("a.txt\nsub/b.txt\nsub/deep/c.txt\n.hidden\n", "").entries,
@@ -177,11 +217,46 @@ ok(stB.ok, "status B ok: " + JSON.stringify(stB));
   ok(stB.head.marker === "@", "anchor stays @ (the current head): " + JSON.stringify(stB.head));
   ok(stB.head.description === "", "fresh empty working copy has no description: " + JSON.stringify(stB.head));
   ok(/^[0-9a-f]{12}$/.test(stB.head.id), "head id is the working copy's: " + JSON.stringify(stB.head));
-  // The review dropdown's list: newest-first real commits, root excluded.
-  ok(Array.isArray(stB.commits) && stB.commits.length === 2, "commits listed: " + JSON.stringify(stB.commits));
+  // The review dropdown's list: newest-first, and the root (the log's floor)
+  // is the LAST row — a small repo's log reaches the root within the first page.
+  ok(Array.isArray(stB.commits) && stB.commits.length === 3, "commits listed (2 real + root): " + JSON.stringify(stB.commits));
   ok(stB.commits[0]?.description === "step2" && stB.commits[1]?.description === "baseline", "commits newest-first: " + JSON.stringify(stB.commits));
-  ok(stB.commits.every((c) => /^[0-9a-z]{12}$/.test(c.id) && c.id !== "z".repeat(12)), "12-char change ids (a–z form), root excluded");
-  ok(stB.commits.every((c) => c.empty === false), "listed commits are non-empty: " + JSON.stringify(stB.commits));
+  ok(stB.commits.every((c) => /^[0-9a-z]{12}$/.test(c.id)), "12-char change ids (a–z form)");
+  ok(stB.commits[2]?.root === true && stB.commits[2]?.id === "z".repeat(12), "the root is the last row, flagged root: " + JSON.stringify(stB.commits[2]));
+  ok(stB.commits.filter((c) => !c.root).every((c) => c.empty === false), "real commits are non-empty (the root is): " + JSON.stringify(stB.commits));
+  // Change-tree columns (the log template's new fields, end-to-end).
+  ok(stB.commits.filter((c) => !c.root).every((c) => c.author === "test@example.com"), "author email (JJ_EMAIL), real rows: " + JSON.stringify(stB.commits));
+  ok(stB.commits.every((c) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(c.date)), "author date, local ISO: " + JSON.stringify(stB.commits));
+  ok(stB.commits.every((c) => c.conflict === false && Array.isArray(c.bookmarks) && Array.isArray(c.tags)), "conflict + ref fields present");
+  ok(stB.commits.filter((c) => !c.root).every((c) => c.glyph === "○"), "plain rows carry jj's ○ node character (no wc/immutable/conflict in this history): " + JSON.stringify(stB.commits.map((c) => c.glyph)));
+  ok(stB.commits[2]?.glyph === "◆", "the root row carries jj's immutable ◆ glyph: " + JSON.stringify(stB.commits[2]));
+  // Both-id columns (the agent ref tokens quote change id + commit id).
+  ok(stB.commits.every((c) => /^[0-9a-f]{12}$/.test(c.commitId)), "each row carries its 12-hex commit id: " + JSON.stringify(stB.commits));
+  ok(stB.commits.every((c) => c.commitId !== c.id), "commit id (hex) differs from change id (a–z form)");
+  // The graph's edges (parent COMMIT ids — rows key on the commit id, since
+  // a divergent change has several commits sharing one change id).
+  ok(Array.isArray(stB.commits[0].parents) && stB.commits[0].parents.length === 1
+     && stB.commits[0].parents[0] === stB.commits[1].commitId, "step2's parent is baseline's COMMIT: " + JSON.stringify(stB.commits));
+  ok(stB.commits[1].parents.length === 1 && /^[0-9a-f]{12}$/.test(stB.commits[1].parents[0]), "baseline's parent (the root) is a 12-hex commit id: " + JSON.stringify(stB.commits));
+  ok(stB.head.parents.length === 1 && stB.head.parents[0] === stB.commits[0].commitId, "the worktree's parent is step2's COMMIT: " + JSON.stringify(stB.head));
+  // The new ref columns, end-to-end (this fixture: no remotes/workspaces,
+  // nothing divergent — the flags are present and false, tracking empty).
+  ok(stB.commits.every((c) => Array.isArray(c.workspaces) && c.workspaces.length === 0
+     && c.hidden === false && c.divergent === false && c.offset === 0
+     && Array.isArray(c.tracking) && c.tracking.length === 0), "new ref columns present + quiet: " + JSON.stringify(stB.commits.map((c) => [c.workspaces, c.hidden, c.divergent, c.offset, c.tracking])));
+  ok(Array.isArray(stB.head.workspaces) && stB.head.hidden === false && stB.head.divergent === false && stB.head.offset === 0 && Array.isArray(stB.head.tracking), "head carries the new ref columns: " + JSON.stringify(stB.head));
+  // The id's significant prefix (jj's own shortest(8) split, end-to-end).
+  ok(stB.commits.every((c) => c.id.startsWith(c.idPrefix) && c.idPrefix.length + c.idRest.length >= 8
+     && c.idPrefix.length + c.idRest.length <= 12
+     && c.id.slice(0, c.idPrefix.length + c.idRest.length) === c.idPrefix + c.idRest),
+     "prefix+rest ≥8 ≤12 chars, a leading slice of the id: " + JSON.stringify(stB.commits));
+  ok(Array.isArray(stB.head.bookmarks) && Array.isArray(stB.head.tags), "head carries the ref columns: " + JSON.stringify(stB.head));
+  ok(/^[0-9a-z]{12}$/.test(stB.head.changeId), "head carries the worktree's 12-char change id: " + JSON.stringify(stB.head));
+  ok(stB.head.changeId !== stB.head.id, "head change id (a–z) differs from its commit id (hex)");
+  ok((await jjIn(ws, ["bookmark", "create", "test-bm", "-r", stB.commits[0].id])).code === 0, "bookmark create");
+  const stB3 = await jjWorkspaceStatus(ws, { force: true });
+  ok(stB3.ok && stB3.commits[0]?.bookmarks?.includes("test-bm"), "bookmark lands on ITS commit row: " + JSON.stringify(stB3.commits[0]?.bookmarks));
+  ok(stB3.commits[1]?.bookmarks?.length === 0, "the other row stays ref-less: " + JSON.stringify(stB3.commits[1]?.bookmarks));
 }
 // New work in the worktree shows up again (worktree base), then restore the
 // clean tree for the handler tests below.
@@ -241,8 +316,9 @@ await rm(join(ws, "n.txt"));
 
 { const r = await call("list", { sessionId: "sess-1" });
   const c = r.value.vcs?.commits;
-  ok(Array.isArray(c) && c.length === 2, "list carries commits (newest first): " + JSON.stringify(c));
+  ok(Array.isArray(c) && c.length === 3, "list carries commits (newest first, 2 real + root): " + JSON.stringify(c));
   ok(c[0]?.description === "step2" && c[1]?.description === "baseline", "commit order + descriptions");
+  ok(c[2]?.root === true && c[2]?.id === "z".repeat(12), "the root is the last row, flagged root");
   ok(c.every((x) => /^[0-9a-z]{12}$/.test(x.id)), "change ids are the friendly a–z form"); }
 const STEP2 = (await jjWorkspaceStatus(ws, { force: true })).commits[0].id;
 const BASE0 = (await jjWorkspaceStatus(ws, { force: true })).commits[1].id;
@@ -315,36 +391,23 @@ const BASE0 = (await jjWorkspaceStatus(ws, { force: true })).commits[1].id;
 { const r = await call("list", { sessionId: "sess-1" });
   ok(r.ok && r.value.commitChanges === undefined, "worktree-mode listing carries NO commitChanges"); }
 
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "a.txt", rev: BASE0 });
-  ok(r.ok && r.value.kind === "text", "fileshow@baseline text: " + JSON.stringify(r?.error ?? null));
-  assert.strictEqual(r.value.text, "l1\nl2\nl3\n", "baseline bytes (DIFFERENT from the worktree content): " + JSON.stringify(r.value.text)); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "a.txt", rev: STEP2 });
-  ok(r.ok && r.value.text === "l1\nl2 CHANGED\nl3\n", "step2 bytes"); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "k.txt", rev: BASE0 });
-  ok(r.ok && r.value.text === "keep\n", "file deleted in step2 still readable AT baseline"); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "k.txt", rev: STEP2 });
-  ok(!r.ok && r.error.code === "internal", "file absent at the rev → internal (envelope-legal): " + JSON.stringify(r)); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "n.txt", rev: STEP2 });
-  ok(r.ok && r.value.text === "brand new\n", "file deleted from the WORKTREE browsable in the commit"); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "sub/s.txt", rev: BASE0 });
-  ok(r.ok && r.value.text === "s1\n", "pre-rename path readable at baseline"); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "sub/s2.txt", rev: BASE0 });
-  ok(!r.ok, "post-rename path absent at baseline: " + JSON.stringify(r)); }
+
+{ const r1 = await call("list", { sessionId: "sess-2" });
+  ok(r1.ok, "plain workspace still lists: " + JSON.stringify(r1?.error ?? null));
+  ok(r1.value.vcs?.ok === false && r1.value.vcs.code === "not-a-workspace", "non-jj degrades: " + JSON.stringify(r1.value.vcs));
+  const r2 = await call("list", { sessionId: "sess-2" });
+  ok(r2.value.vcs?.ok === false && r2.value.vcs.code === "not-a-workspace", "failure cached (force=false): " + JSON.stringify(r2.value.vcs));
+  const r3 = await call("list", { sessionId: "sess-2", force: true });
+  ok(r3.value.vcs?.code === "not-a-workspace", "force re-probes (still not-a-workspace): " + JSON.stringify(r3.value.vcs)); }
+{ const r = await call("diff", { sessionId: "sess-2", relPath: "x.txt", base: "worktree" });
+  ok(!r.ok && r.error.code === "internal", "diff on non-jj workspace → internal (envelope-legal): " + JSON.stringify(r)); }
+
 await writeFile(join(ws, "bin.dat"), Buffer.from([0, 1, 2, 255, 0]));
 // a real 1×1 PNG (v1), the displayable-binary path (the base64 `data` field)
 const PNG1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
 await writeFile(join(ws, "pic.png"), PNG1);
 ok((await jjIn(ws, ["commit", "-m", "bin"])).code === 0, "binary committed (folds the current worktree)");
 const BIN = (await jjWorkspaceStatus(ws, { force: true })).commits[0].id;
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "bin.dat", rev: BIN });
-  ok(r.ok && r.value.kind === "binary", "binary at a rev → binary card, not text: " + JSON.stringify(r?.value ?? r?.error));
-  ok(r.value.size === 5, "binary size echoed");
-  ok(r.value.data === undefined, "non-displayable binary → metadata only (no data)"); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "pic.png", rev: BIN });
-  ok(r.ok && r.value.kind === "binary" && r.value.type === "image/png", "png at a rev → displayable binary: " + JSON.stringify(r?.value ?? r?.error));
-  assert.strictEqual(Buffer.from(r.value.data, "base64").toString("hex"), PNG1.toString("hex"), "png BYTES round-trip through the base64 data field"); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "pic.png", rev: BASE0 });
-  ok(!r.ok && r.error.code === "internal", "png absent at an older rev → internal"); }
 // v2: a different byte + an OVER-CAP png (8-byte magic + 1_001_992 NULs =
 // 1_002_000 total, inside maxBuffer), the newer rev's bytes must be v2's,
 // and the over-cap image gets NO data (a truncated image is broken, and the
@@ -354,11 +417,6 @@ await writeFile(join(ws, "pic.png"), PNG2);
 await writeFile(join(ws, "big.png"), Buffer.concat([PNG1.subarray(0, 8), Buffer.alloc(1_001_992, 0)]));
 ok((await jjIn(ws, ["commit", "-m", "pic2"])).code === 0, "png v2 + over-cap png committed");
 const PIC2 = (await jjWorkspaceStatus(ws, { force: true })).commits[0].id;
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "pic.png", rev: PIC2 });
-  assert.strictEqual(Buffer.from(r.value.data, "base64").toString("hex"), PNG2.toString("hex"), "bytes AT the NEWER rev (the v2 image, not v1)"); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "big.png", rev: PIC2 });
-  ok(r.ok && r.value.kind === "binary" && r.value.type === "image/png", "over-cap png sniffed: " + JSON.stringify({ ok: r.ok, type: r?.value?.type, err: r?.error }));
-  ok(r.value.size > 1_000_000 && r.value.data === undefined, "over the cap → NO data (truncated image = broken): " + JSON.stringify({ size: r.value?.size, hasData: !!r.value?.data })); }
 
 // binary DIFF at a change id: the host attaches the file's BYTES at the rev
 // and at its parent (`<rev>-`), old|new rendering for displayable images.
@@ -375,26 +433,6 @@ const PIC2 = (await jjWorkspaceStatus(ws, { force: true })).commits[0].id;
   ok(r.ok && r.value.binary === undefined, "noBinary (the poll's refresh) → no binary block"); }
 { const r = await call("diff", { sessionId: "sess-1", relPath: "bin.dat", base: BIN });
   ok(r.ok && r.value.binary && r.value.binary.new && r.value.binary.new.data === undefined, "non-displayable binary → block without data (the card): " + JSON.stringify(r?.value?.binary)); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "a.txt", rev: STEP2, });
-  ok(r.ok, "fileshow ok shape"); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "a.txt" });
-  ok(!r.ok && r.error.code === "bad-request", "missing rev → bad-request"); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "a.txt", rev: "worktree" });
-  ok(r.ok && r.value.kind === "text" && r.value.text === "l1\nl2 CHANGED\nl3\n", "rev 'worktree' → the LIVE worktree file (not a rev): " + JSON.stringify(r)); }
-{ const r = await call("fileshow", { sessionId: "sess-1", relPath: "/etc/passwd", rev: STEP2 });
-  ok(!r.ok && r.error.code === "workspace-invalid-path", "absolute → workspace-invalid-path"); }
-{ const r = await call("fileshow", { sessionId: "sess-2", relPath: "x.txt", rev: STEP2 });
-  ok(!r.ok && r.error.code === "internal", "non-jj workspace → internal (not-a-workspace mapped): " + JSON.stringify(r)); }
-
-{ const r1 = await call("list", { sessionId: "sess-2" });
-  ok(r1.ok, "plain workspace still lists: " + JSON.stringify(r1?.error ?? null));
-  ok(r1.value.vcs?.ok === false && r1.value.vcs.code === "not-a-workspace", "non-jj degrades: " + JSON.stringify(r1.value.vcs));
-  const r2 = await call("list", { sessionId: "sess-2" });
-  ok(r2.value.vcs?.ok === false && r2.value.vcs.code === "not-a-workspace", "failure cached (force=false): " + JSON.stringify(r2.value.vcs));
-  const r3 = await call("list", { sessionId: "sess-2", force: true });
-  ok(r3.value.vcs?.code === "not-a-workspace", "force re-probes (still not-a-workspace): " + JSON.stringify(r3.value.vcs)); }
-{ const r = await call("diff", { sessionId: "sess-2", relPath: "x.txt", base: "worktree" });
-  ok(!r.ok && r.error.code === "internal", "diff on non-jj workspace → internal (envelope-legal): " + JSON.stringify(r)); }
 
 {
   const mk = (ch) => Array.from({ length: 8000 }, (_, i) => `line ${i} ${ch.repeat(100)}`).join("\n") + "\n";
@@ -467,8 +505,6 @@ const PIC2 = (await jjWorkspaceStatus(ws, { force: true })).commits[0].id;
   const r = await call("list", { sessionId: "sess-1", rev: DASH });
   ok(r.ok, "list@dash ok: " + JSON.stringify(r?.error ?? null));
   ok(r.value.entries.some((e) => e.path === "--dash.txt"), "dash-prefixed path listed (the `--` separator): " + JSON.stringify(r.value.entries.map((e) => e.path)));
-  const r2 = await call("fileshow", { sessionId: "sess-1", relPath: "--dash.txt", rev: DASH });
-  ok(r2.ok && r2.value.text === "dash\n", "fileshow of the dash path at the rev: " + JSON.stringify(r2?.error ?? r2?.value));
 }
 
 // Glob metacharacters in a path: jj fileset args are globs when they contain
@@ -484,8 +520,6 @@ const PIC2 = (await jjWorkspaceStatus(ws, { force: true })).commits[0].id;
   const r = await call("diff", { sessionId: "sess-1", relPath: "a*b.txt", base: GLOB });
   ok(r.ok, "glob-metachar diff ok: " + JSON.stringify(r?.error ?? null));
   ok(r.value.patch.includes("a*b.txt") && !r.value.patch.includes("aXb.txt"), "escaped path scopes to the literal file (no glob sibling leak): " + r.value.patch);
-  const r2 = await call("fileshow", { sessionId: "sess-1", relPath: "a*b.txt", rev: GLOB });
-  ok(r2.ok && r2.value.text === "ab2\n", "fileshow of the glob-metachar path (no sibling bytes): " + JSON.stringify(r2?.error ?? r2?.value));
 }
 
 {
@@ -538,7 +572,7 @@ const PIC2 = (await jjWorkspaceStatus(ws, { force: true })).commits[0].id;
 // contains the literal git marker strings as FILE CONTENT must not be
 // classified as binary. The server's marker scan is line-based, anchored to
 // column 0; the diff body prefixes content lines with space/+/−, so an
-// embedded string never matches. (filestab's own src/index.ts trips this:
+// embedded string never matches. (changestab's own src/index.ts trips this:
 // its marker-scan code contains the strings, so diffing it attached an
 // all-null binary block and the client rendered "binary file (content
 // differs)".)
@@ -570,13 +604,13 @@ const PIC2 = (await jjWorkspaceStatus(ws, { force: true })).commits[0].id;
 
 // ── tick: the jj hot-file gate ──────────────────────────────────────────
 // The gate stats .jj/working_copy/tree_state + .jj/repo/op_heads/heads.
-// Verified behavior: filestab's own reads (--no-integrate-operation) leave
+// Verified behavior: changestab's own reads (--no-integrate-operation) leave
 // them stable; an INTEGRATED jj op (bookmark, new) moves op_heads/heads
 // and trips the gate on the next shallow tick.
 { const r = await call("tick", { sessionId: "sess-1", dirs: [""] });
   ok(r.ok && r.value.openFile === "same" && r.value.list === "same", "jj cold tick baselines (the client already holds the listing): " + JSON.stringify(r.value)); }
 { const r = await call("tick", { sessionId: "sess-1", dirs: [""] });
-  ok(r.value.openFile === "same" && r.value.list === "same", "jj quiet tick → same/same (filestab's own deep read left the hot files stable): " + JSON.stringify(r.value)); }
+  ok(r.value.openFile === "same" && r.value.list === "same", "jj quiet tick → same/same (changestab's own deep read left the hot files stable): " + JSON.stringify(r.value)); }
 // An integrated op that moves the op head but NO visible state: the gate
 // MUST trip (op_heads/heads is rewritten), the deep read runs, the
 // signature is unchanged, and the answer is an honest "same" — a trip is
@@ -598,6 +632,42 @@ const PIC2 = (await jjWorkspaceStatus(ws, { force: true })).commits[0].id;
   ok(vcs.ok === true && vcs.head.id !== h1, "the fresh vcs block carries the new head"); }
 { const r = await call("tick", { sessionId: "sess-1", dirs: [""] });
   ok(r.value.list === "same", "after the deep read absorbed the state, the next shallow tick is quiet: " + JSON.stringify(r.value)); }
+
+// The `log` endpoint's page function (the change log's scroll auto-load). A
+// fresh fixture with MORE than one page of commits: page 0 (50) + the
+// remainder as one short page, contiguous in jj's own order, and a page at/
+// past the end that is empty (the client's exhaustion signal).
+{
+  const lb = await mkdtemp(join(tmpdir(), "filez-jj-log-"));
+  const lws = join(lb, "ws");
+  await runJj(lb, ["git", "init", lws]);
+  // 54 real commits + the root = 55 rows: page 0 (50) + page 1 (4 commits +
+  // the root), so the root lands on the short remainder and is the final row.
+  const N = 54;
+  for (let i = 1; i <= N; i++) {
+    // `jj commit` (not `jj new`): it commits the current worktree as log-c<i>
+    // and leaves @ a FRESH empty worktree, so the visible log (the `~ @`
+    // revset) is exactly log-c1..log-c54 + the root, newest first.
+    const r = await jjIn(lws, ["commit", "-m", "log-c" + i]);
+    if (r.code !== 0) throw new Error("jj commit log-c" + i + ": " + r.err);
+  }
+  const p0 = await jjLogPage(lws, 0, 50);
+  ok(p0.commits.length === 50, "log page 0 = 50 rows: " + p0.commits.length);
+  const p1 = await jjLogPage(lws, 50, 50);
+  ok(p1.commits.length === 5, "log page 1 = the short remainder (4 commits + the root): " + p1.commits.length);
+  const all = [...p0.commits, ...p1.commits];
+  ok(new Set(all.map((c) => c.id)).size === 55, "55 distinct change ids across the two pages (no overlap)");
+  ok(all[0].description === "log-c54" && all[53].description === "log-c1", "newest-first across the page boundary: " + all[0].description + " … " + all[53].description);
+  ok(all[54].root === true && all[54].id === "z".repeat(12), "the root is the final row (the log's floor): " + JSON.stringify(all[54]));
+  // Page 0 matches the worktree status's own first 50 (same revset + order).
+  const stP = await jjWorkspaceStatus(lws, { force: true });
+  ok(stP.ok && p0.commits.every((c, i) => stP.commits[i]?.id === c.id), "page 0 == the vcs block's first 50 (same order)");
+  const pEnd = await jjLogPage(lws, N + 1, 50);
+  ok(pEnd.commits.length === 0, "a page at the end is empty (exhaustion): " + JSON.stringify(pEnd.commits));
+  const pPast = await jjLogPage(lws, 1000, 50);
+  ok(pPast.commits.length === 0, "a page past the hard cap is empty");
+  await rm(lb, { recursive: true, force: true });
+}
 
 await rm(base, { recursive: true, force: true });
 console.log(`jj: ${n} assertions passed (parse + real jj ${await new Promise((r) => execFile("jj", ["--version"], (_, so) => r(so.trim().split("\n")[0])))})`);
