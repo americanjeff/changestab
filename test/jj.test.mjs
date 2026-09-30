@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import assert from "node:assert";
-import { jj, parseSummary, parseHead, parseCommitLog, parseConflicts, insideWorkspace, jjWorkspaceStatus, jjLogPage } from "../dist/jj.js";
+import { jj, parseSummary, parseHead, parseCommitLog, parseConflicts, insideWorkspace, jjWorkspaceStatus, jjLogPage, jjDescription } from "../dist/jj.js";
 import { snapshotDirListing } from "../dist/snapshot.js";
 import { __test } from "../dist/index.js";
 
@@ -340,6 +340,54 @@ const BASE0 = (await jjWorkspaceStatus(ws, { force: true })).commits[1].id;
   ok(!r.ok && r.error.code === "bad-request", "revset injection via base → bad-request (hex whitelist)"); }
 { const r = await call("diff", { relPath: "a.txt", base: "worktree" });
   ok(!r.ok && r.error.code === "bad-request", "missing sessionId → bad-request: " + JSON.stringify(r)); }
+{ // ignoreWs: the host maps it to jj's `-w` (git: --ignore-all-space). A
+  // whitespace-only change shows without the flag and collapses with it. No
+  // new commit: the change rides the current (dirty) worktree.
+  await writeFile(join(ws, "a.txt"), "l1 \nl2 CHANGED\nl3\n");
+  const raw = await call("diff", { sessionId: "sess-1", relPath: "a.txt", base: "worktree" });
+  ok(raw.ok && raw.value.patch.includes("-l1\n") && raw.value.patch.includes("+l1 \n"), "worktree diff without ignoreWs shows the ws-only change: " + raw.value.patch);
+  const w = await call("diff", { sessionId: "sess-1", relPath: "a.txt", base: "worktree", ignoreWs: true });
+  ok(w.ok && w.value.patch.startsWith("diff --git") && !w.value.patch.includes("@@"), "ignoreWs: the ws-only change leaves no hunks (the file header only — the view shows 'no changes'): " + w.value.patch); }
+
+// ── desc: the selected change's full message ───────────────────────────
+// The tree's rows carry only the first line (the log template keeps the
+// 50-row wire compact); the endpoint returns the full message for one rev.
+// A backend read failure DEGRADES to "" (a message is decoration, not
+// structure — the row's first line still stands); only a malformed rev is
+// an error.
+{ const r = await call("desc", { sessionId: "sess-1", rev: STEP2 });
+  ok(r.ok, "desc@rev ok: " + JSON.stringify(r?.error ?? null));
+  ok(r.value.description === "step2", "single-line message, trailing newline normalized away: " + JSON.stringify(r.value)); }
+{ const r = await call("desc", { sessionId: "sess-1", rev: BASE0 });
+  ok(r.ok && r.value.description === "baseline", "the older commit's message: " + JSON.stringify(r.value)); }
+{ const r = await call("desc", { sessionId: "sess-1", rev: "worktree" });
+  ok(r.ok && r.value.description === "", "the worktree (jj @) has no description set → '': " + JSON.stringify(r.value)); }
+{ const r = await call("desc", { sessionId: "sess-1", rev: "deadbeef0000" });
+  ok(r.ok && r.value.description === "", "unresolvable rev DEGRADES to '' (not an error — unlike diff's internal): " + JSON.stringify(r).slice(0, 200)); }
+{ const r = await call("desc", { sessionId: "sess-1", rev: "a@ & all()" });
+  ok(!r.ok && r.error.code === "bad-request", "revset injection via rev → bad-request (id alphabet)"); }
+{ const r = await call("desc", { sessionId: "sess-1", rev: "abc12" });
+  ok(!r.ok && r.error.code === "bad-request", "too-short rev → bad-request"); }
+{ const r = await call("desc", { sessionId: "sess-1", rev: "commit" });
+  ok(!r.ok && r.error.code === "bad-request", "'commit' (a diff BASE keyword) is not a rev → bad-request"); }
+{ const r = await call("desc", { rev: STEP2 });
+  ok(!r.ok && r.error.code === "bad-request", "missing sessionId → bad-request"); }
+{ // Multi-line: a dedicated fixture (the shared ws's history and its worktree
+  // description are asserted all over this file — a described worktree would
+  // leak into the tick tests). `jj commit -m a -m b` joins with a blank line
+  // (git's -m -m parity).
+  const db = await mkdtemp(join(tmpdir(), "filez-jj-desc-"));
+  const dws = join(db, "ws");
+  await runJj(db, ["git", "init", dws]);
+  const mc = await jjIn(dws, ["commit", "-m", "subject", "-m", "body line 2"]);
+  ok(mc.code === 0, "multi-line commit created: " + mc.err);
+  const dId = (await runJj(dws, ["--no-integrate-operation", "--color", "never", "log", "-G", "-T", 'change_id.short() ++ "\\n"'])).out.split("\n")[1];
+  const dCid = (await runJj(dws, ["--no-integrate-operation", "--color", "never", "log", "-G", "-T", 'commit_id.short() ++ "\\n"'])).out.split("\n")[1];
+  ok(/^[0-9a-z]{12}$/.test(dId ?? "") && /^[0-9a-f]{12}$/.test(dCid ?? ""), "(sanity) both id forms resolved: " + JSON.stringify({ dId, dCid }));
+  ok((await jjDescription(dws, dId)) === "subject\n\nbody line 2", "full message by CHANGE id: subject + blank + body, trailing newlines stripped: " + JSON.stringify(await jjDescription(dws, dId)));
+  ok((await jjDescription(dws, dCid)) === "subject\n\nbody line 2", "…and by COMMIT id (the client's row key): " + JSON.stringify(await jjDescription(dws, dCid)));
+  ok((await jjDescription(dws, "qqqqqqqqqqqq")) === "", "helper degrades to '' on a bad rev");
+  await rm(db, { recursive: true, force: true }); }
 
 // History at this point: root → baseline (a.txt, k.txt, sub/s.txt) → step2
 // (a.txt M, n.txt A, k.txt D, sub/s.txt → sub/s2.txt). The worktree is dirty

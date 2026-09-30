@@ -50,6 +50,8 @@ const zh: Record<string, string> = {
   "files.noFilesChanged": "没有变更文件", "files.changedFiles": "已变更文件", "files.resizeTree": "调整变更历史与文件面板大小",
   "files.loadingOlder": "正在加载更多变更…",
   "files.openInFiles": "在 Files 中打开",
+  "files.ignoreWs": "忽略空白", "files.ignoreWsHint": "隐藏仅空白差异的行（重新获取 diff）",
+  "files.wsOnly": "仅空白字符差异", "files.movedLine": "移动的行",
   "files.noVcs": "此工作区没有已初始化的仓库", "files.noVcsHint": "运行 git init 或 jj git init 后可在此查看变更", "files.noVcsBtn": "在 Files 中浏览",
   "files.emptyCommit": "（空）", "files.noDescription": "（未设置描述）", "files.rootCommit": "根修订",
   "files.hidden": "（已隐藏）", "files.divergent": "（已分叉）", "files.conflictLabel": "（冲突）",
@@ -84,6 +86,8 @@ const en: Record<string, string> = {
   "files.noFilesChanged": "no files changed", "files.changedFiles": "Changed files", "files.resizeTree": "Resize the change log and the changed-files pane",
   "files.loadingOlder": "Loading more changes…",
   "files.openInFiles": "Open in Files",
+  "files.ignoreWs": "ignore whitespace", "files.ignoreWsHint": "Hide lines that differ only in whitespace (re-fetches the diff)",
+  "files.wsOnly": "whitespace-only change", "files.movedLine": "moved line",
   "files.noVcs": "no initialized repository in this workspace", "files.noVcsHint": "run git init or jj git init here to see its changes", "files.noVcsBtn": "Browse in Files",
   "files.emptyCommit": "(empty)", "files.noDescription": "(no description set)", "files.rootCommit": "root",
   "files.hidden": "(hidden)", "files.divergent": "(divergent)", "files.conflictLabel": "(conflict)",
@@ -390,8 +394,10 @@ type VcsChange = { path: string; status: string; oldPath?: string | null; base?:
 // The new columns are optional: a stale listing (or a test fixture) may
 // carry the old {id, empty, description} shape and the tree degrades — no
 // pills, no date — rather than breaking.
-// id = the row's identity (jj: change id, git: short sha); commitId = the
-// git form of the same commit (jj only — the agent ref tokens quote both).
+// id = the DISPLAY identity (jj: change id, git: short sha); commitId = the
+// commit's own id (jj only — git rows have none, their id IS the sha). The
+// row's SELECTION identity is the commit id: a divergent change's rows share
+// the change id but each reviews its own commit.
 type VcsTracking = { name: string; remote: string; ahead: number; behind: number };
 type VcsCommit = {
   id: string;
@@ -538,9 +544,49 @@ function gapAfter(prev: DiffHunk | null, next: DiffHunk | null): Gap | null {
   return oldRange || newRange ? { old: oldRange, new: newRange } : null;
 }
 
-// Pair each contiguous del run with the contiguous add run that FOLLOWS it,
-// in order, up to the shorter (surplus rows keep a blank opposite cell).
-// In-order pairing prevents the `-a -b +c` mis-pair.
+// One change block's del run + add run, paired. Lines whose content is the
+// same up to whitespace pair FIRST — a del takes the earliest still-free
+// match AFTER the previous match (greedy in order, so pairs never cross): a
+// line that moved inside the block keeps its pairing instead of smearing
+// into its neighbor. Whitespace-normalized identity, not byte identity: a
+// re-alignment (the struct's `=` column moves with the longest field) is
+// the SAME logical line, and byte equality would never match it. The
+// leftovers then pair positionally (the old rule), so a similar-but-changed
+// pair still gets its intra-line spans. The map holds each row's partner in
+// both directions; unpaired rows stay out.
+function matchRun(dels: DiffRow[], adds: DiffRow[]): Map<DiffRow, DiffRow> {
+  const partner = new Map<DiffRow, DiffRow>();
+  // The match scan is O(n·m); a block beyond this bound is pathological and
+  // falls back to positional-only pairing (the same cap family as
+  // intraLineDiff's table).
+  if (dels.length * adds.length <= 100000) {
+    const dk = dels.map((d) => d.text.replace(/\s+/g, ""));
+    const ak = adds.map((a) => a.text.replace(/\s+/g, ""));
+    let lo = 0;
+    for (let di = 0; di < dels.length; di++) {
+      for (let ai = lo; ai < adds.length; ai++) {
+        if (ak[ai] === dk[di]) {
+          partner.set(dels[di]!, adds[ai]!);
+          partner.set(adds[ai]!, dels[di]!);
+          lo = ai + 1;
+          break;
+        }
+      }
+    }
+  }
+  const dl: DiffRow[] = [], al: DiffRow[] = [];
+  for (const d of dels) if (!partner.has(d)) dl.push(d);
+  for (const a of adds) if (!partner.has(a)) al.push(a);
+  for (let p = 0; p < Math.min(dl.length, al.length); p++) {
+    partner.set(dl[p]!, al[p]!);
+    partner.set(al[p]!, dl[p]!);
+  }
+  return partner;
+}
+// Pair each contiguous del run with the contiguous add run that FOLLOWS it
+// (surplus rows keep a blank opposite cell). A solo row is emitted at its
+// own sequence position — the adds that precede a matched pair in the NEW
+// file come out before the pair, not after it.
 function displayRows(hunk: DiffHunk): DisplayRow[] {
   const out: DisplayRow[] = [];
   let i = 0;
@@ -551,10 +597,15 @@ function displayRows(hunk: DiffHunk): DisplayRow[] {
     while (i < hunk.rows.length && hunk.rows[i]!.k === "del") { dels.push(hunk.rows[i]!); i++; }
     const adds: DiffRow[] = [];
     while (i < hunk.rows.length && hunk.rows[i]!.k === "add") { adds.push(hunk.rows[i]!); i++; }
-    const pairs = Math.min(dels.length, adds.length);
-    for (let p = 0; p < pairs; p++) out.push({ type: "mod", old: dels[p]!, nw: adds[p]! });
-    for (let p = pairs; p < dels.length; p++) out.push({ type: "del", old: dels[p]!, nw: null });
-    for (let p = pairs; p < adds.length; p++) out.push({ type: "add", old: null, nw: adds[p]! });
+    const partner = matchRun(dels, adds);
+    let di = 0, ai = 0;
+    while (di < dels.length || ai < adds.length) {
+      const d = di < dels.length ? dels[di]! : null;
+      const a = ai < adds.length ? adds[ai]! : null;
+      if (d && a && partner.get(d) === a) { out.push({ type: "mod", old: d, nw: a }); di++; ai++; continue; }
+      if (a && (!d || partner.get(a) !== d)) { out.push({ type: "add", old: null, nw: a }); ai++; continue; }
+      out.push({ type: "del", old: d!, nw: null }); di++;
+    }
   }
   return out;
 }
@@ -652,7 +703,7 @@ type SavedState = {
   /** The selected changed file (workspace relPath). */
   selected: string | null;
   navW: number | null;
-  /** The reviewed change id (null = the working copy). */
+  /** The reviewed change's COMMIT id (null = the working copy). */
   rev: string | null;
   collapsed: boolean;
   /** The change-log pane's height (px) in the split nav; null = default. */
@@ -823,21 +874,33 @@ function modSideContent(segs: IntraSeg[], spanCls: string, keyBase: string, noNe
   if (noNewline) out.push(<NN key={keyBase + "nn"} />);
   return out;
 }
-function sideBySideCells(d: DisplayRow, key: number): React.ReactElement[] {
+// A mod pair whose lines are identical (a moved line) or differ ONLY in
+// whitespace (a re-alignment: the struct's `=` column moves with the longest
+// field name). intraLineDiff is null for both, so unstyled the row would
+// read as a full red/green "false change" with no visible difference.
+function modDimKind(oldText: string, newText: string): "moved" | "ws" | null {
+  if (oldText === newText) return "moved";
+  return oldText.replace(/\s+/g, "") === newText.replace(/\s+/g, "") ? "ws" : null;
+}
+function sideBySideCells(d: DisplayRow, key: number, t: TFunc): React.ReactElement[] {
   // data-dl/data-dn carry the real file line numbers on the cells AND the
   // gutters, so a selection OR a right-click anywhere on the row resolves to
   // the line(s) the ref should point at.
-  const noOld = <span key={key + "no"} className={"dswFiles_diffNo" + (d.type === "del" || d.type === "mod" ? " dswFiles_diffNoDel" : "")} data-dl={d.old && d.old.oldNo != null ? d.old.oldNo : undefined}>{d.old ? d.old.oldNo : ""}</span>;
   const intra = d.type === "mod" && d.old && d.nw ? intraLineDiff(d.old.text, d.nw.text) : null;
+  const dim = d.type === "mod" && !intra && d.old && d.nw ? modDimKind(d.old.text, d.nw.text) : null;
+  const dimTitle = dim ? (dim === "ws" ? t("files.wsOnly") : t("files.movedLine")) : undefined;
+  const noOld = <span key={key + "no"} className={"dswFiles_diffNo" + (d.type === "del" || d.type === "mod" ? " dswFiles_diffNoDel" : "") + (dim ? " dswFiles_noModDim" : "")} data-dl={d.old && d.old.oldNo != null ? d.old.oldNo : undefined}>{d.old ? d.old.oldNo : ""}</span>;
   const cellOld = (
-    <span key={key + "co"} className={"dswFiles_diffCell" + (d.type === "ctx" ? "" : d.type === "add" ? " dswFiles_cellAddO" : " dswFiles_cellDelO")}
+    <span key={key + "co"} className={"dswFiles_diffCell" + (d.type === "ctx" ? "" : d.type === "add" ? " dswFiles_cellAddO" : " dswFiles_cellDelO") + (dim ? " dswFiles_cellModDim" : "")}
+      title={dimTitle}
       data-dl={d.old && d.old.oldNo != null ? d.old.oldNo : undefined}>
       <span className="dswFiles_diffCellIn">{intra ? modSideContent(intra.old, "dswFiles_spanDel", key + "o", d.old!.noNewline) : diffSide(d.old)}</span>
     </span>
   );
-  const noNw = <span key={key + "nw"} className={"dswFiles_diffNo" + (d.type === "add" || d.type === "mod" ? " dswFiles_diffNoAdd" : "")} data-dn={d.nw && d.nw.newNo != null ? d.nw.newNo : undefined}>{d.nw ? d.nw.newNo : ""}</span>;
+  const noNw = <span key={key + "nw"} className={"dswFiles_diffNo" + (d.type === "add" || d.type === "mod" ? " dswFiles_diffNoAdd" : "") + (dim ? " dswFiles_noModDim" : "")} data-dn={d.nw && d.nw.newNo != null ? d.nw.newNo : undefined}>{d.nw ? d.nw.newNo : ""}</span>;
   const cellNw = (
-    <span key={key + "cn"} className={"dswFiles_diffCell" + (d.type === "ctx" ? "" : d.type === "del" ? " dswFiles_cellDelN" : " dswFiles_cellAddN")}
+    <span key={key + "cn"} className={"dswFiles_diffCell" + (d.type === "ctx" ? "" : d.type === "del" ? " dswFiles_cellDelN" : " dswFiles_cellAddN") + (dim ? " dswFiles_cellModDim" : "")}
+      title={dimTitle}
       data-dn={d.nw && d.nw.newNo != null ? d.nw.newNo : undefined}>
       <span className="dswFiles_diffCellIn">{intra ? modSideContent(intra.nw, "dswFiles_spanAdd", key + "n", d.nw!.noNewline) : diffSide(d.nw)}</span>
     </span>
@@ -861,9 +924,10 @@ function gapCellsU(gap: Gap, key: number): React.ReactElement[] {
   ];
 }
 // The mod pairing for the unified (narrow) view: which del row pairs with
-// which add row — the same in-order pairing displayRows uses for the
-// side-by-side view. Raw row order is kept (del run before add run); the
-// pairing only supplies the opposite line for the intra-line spans.
+// which add row — the same run matching displayRows uses (identical-text
+// pairs first, then positional for the leftovers). Raw row order is kept
+// (del run before add run); the pairing only supplies the opposite line for
+// the intra-line spans.
 function unifiedPairs(hunk: DiffHunk): Map<DiffRow, { other: DiffRow; side: "old" | "new" }> {
   const map = new Map<DiffRow, { other: DiffRow; side: "old" | "new" }>();
   let i = 0;
@@ -872,37 +936,43 @@ function unifiedPairs(hunk: DiffHunk): Map<DiffRow, { other: DiffRow; side: "old
     const dels: DiffRow[] = [], adds: DiffRow[] = [];
     while (i < hunk.rows.length && hunk.rows[i]!.k === "del") { dels.push(hunk.rows[i]!); i++; }
     while (i < hunk.rows.length && hunk.rows[i]!.k === "add") { adds.push(hunk.rows[i]!); i++; }
-    const pairs = Math.min(dels.length, adds.length);
-    for (let p = 0; p < pairs; p++) {
-      map.set(dels[p]!, { other: adds[p]!, side: "old" });
-      map.set(adds[p]!, { other: dels[p]!, side: "new" });
-    }
+    const partner = matchRun(dels, adds);
+    for (const d of dels) { const a = partner.get(d); if (a) map.set(d, { other: a, side: "old" }); }
+    for (const a of adds) { const d = partner.get(a); if (d) map.set(a, { other: d, side: "new" }); }
   }
   return map;
 }
-function unifiedCells(r: DiffRow, key: number, pair?: { other: DiffRow; side: "old" | "new" }): React.ReactElement[] {
+function unifiedCells(r: DiffRow, key: number, pair?: { other: DiffRow; side: "old" | "new" }, t?: TFunc): React.ReactElement[] {
   // Gutter carries the same numbers as the cell so a right-click on the line
   // NUMBER resolves to a ref, not just a right-click on the line content.
-  const no = <span key={key + "no"} className={"dswFiles_diffNo" + (r.k === "del" ? " dswFiles_diffNoDel" : r.k === "add" ? " dswFiles_diffNoAdd" : "")}
-    data-dl={r.k !== "add" && r.oldNo != null ? r.oldNo : undefined}
-    data-dn={r.k !== "del" && r.newNo != null ? r.newNo : undefined}>{r.k === "add" ? r.newNo : r.oldNo}</span>;
+  let body: React.ReactNode[] | null = null;
+  let nnInside = false;
+  let dim: "moved" | "ws" | null = null;
+  if (pair) {
+    const isOld = pair.side === "old";
+    const oldText = isOld ? r.text : pair.other.text;
+    const newText = isOld ? pair.other.text : r.text;
+    const intra = intraLineDiff(oldText, newText);
+    if (intra) {
+      body = modSideContent(isOld ? intra.old : intra.nw, isOld ? "dswFiles_spanDel" : "dswFiles_spanAdd", key + "u", r.noNewline);
+      nnInside = true;
+    } else {
+      dim = modDimKind(oldText, newText);
+    }
+  }
   // The +/−/space marker sits INSIDE the cell in the unified view (unlike
   // side-by-side), so it is a span: the context menu's snippet excludes it.
   const marker = <span key={key + "mk"} className="dswFiles_diffMark" aria-hidden="true">{r.k === "ctx" ? " " : r.k === "add" ? "+" : "-"}</span>;
-  let content: React.ReactNode = [marker, r.text];
-  let nnInside = false;
-  if (pair) {
-    const intra = intraLineDiff(pair.side === "old" ? r.text : pair.other.text, pair.side === "old" ? pair.other.text : r.text);
-    if (intra) {
-      const isOld = pair.side === "old";
-      content = [marker, ...modSideContent(isOld ? intra.old : intra.nw, isOld ? "dswFiles_spanDel" : "dswFiles_spanAdd", key + "u", r.noNewline)];
-      nnInside = true;
-    }
-  }
+  const content: React.ReactNode = [marker, ...(body ?? [r.text])];
   // Unified view: a "del" row carries only the old number, an "add" row only
   // the new number, a "ctx" row both (the ref prefers the new side).
+  const dimTitle = dim && t ? (dim === "ws" ? t("files.wsOnly") : t("files.movedLine")) : undefined;
+  const no = <span key={key + "no"} className={"dswFiles_diffNo" + (r.k === "del" ? " dswFiles_diffNoDel" : r.k === "add" ? " dswFiles_diffNoAdd" : "") + (dim ? " dswFiles_noModDim" : "")}
+    data-dl={r.k !== "add" && r.oldNo != null ? r.oldNo : undefined}
+    data-dn={r.k !== "del" && r.newNo != null ? r.newNo : undefined}>{r.k === "add" ? r.newNo : r.oldNo}</span>;
   const cell = (
-    <span key={key + "c"} className={"dswFiles_diffCell" + (r.k === "add" ? " dswFiles_cellAddN" : r.k === "del" ? " dswFiles_cellDelO" : "")}
+    <span key={key + "c"} className={"dswFiles_diffCell" + (r.k === "add" ? " dswFiles_cellAddN" : r.k === "del" ? " dswFiles_cellDelO" : "") + (dim ? " dswFiles_cellModDim" : "")}
+      title={dimTitle}
       data-dl={r.k !== "add" && r.oldNo != null ? r.oldNo : undefined}
       data-dn={r.k !== "del" && r.newNo != null ? r.newNo : undefined}>
       <span className="dswFiles_diffCellIn">{content}{!nnInside && r.noNewline ? <NN /> : null}</span>
@@ -1040,6 +1110,12 @@ function DiffView(props: DiffViewProps) {
   if (model.isDeleted) meta.push(t("files.diffDeleted"));
   if (model.renameFrom && model.renameFrom !== model.newPath) meta.push(t("files.diffRenamedFrom") + " " + model.renameFrom);
   if (model.modeFrom && model.modeTo && model.modeFrom !== model.modeTo) meta.push(model.modeFrom + " → " + model.modeTo);
+  // Zero hunks with nothing else to explain the file (a whitespace-only
+  // change under the ignore-whitespace toggle leaves the file header with no
+  // hunks): the note keeps the pane honest instead of blank.
+  const modeChanged = !!(model.modeFrom && model.modeTo && model.modeFrom !== model.modeTo);
+  const renamed = !!(model.renameFrom && model.renameFrom !== model.newPath);
+  if (model.hunks.length === 0 && !model.isNew && !model.isDeleted && !renamed && !modeChanged) meta.push(t("files.noChanges"));
   // The file's name lives in the pane's general header (PreviewPane); this
   // sticky head keeps only the diff-specific meta and vanishes without it.
   const head = meta.length
@@ -1107,7 +1183,7 @@ function DiffView(props: DiffViewProps) {
   for (let i = 0; i < flat.length && i < MAX_DIFF_ROWS; i++) {
     const item = flat[i]!;
     if (item.kind === "gap") cells.push(...(narrow ? gapCellsU(item.gap, i) : gapCells(item.gap, i)));
-    else cells.push(...(narrow ? unifiedCells(item.r, i, item.pair ?? undefined) : sideBySideCells(item.d, i)));
+    else cells.push(...(narrow ? unifiedCells(item.r, i, item.pair ?? undefined, t) : sideBySideCells(item.d, i, t)));
   }
   const notes: string[] = [];
   if (props.truncated) notes.push(t("files.diffTruncatedPatch"));
@@ -1221,6 +1297,8 @@ type DiffState = {
   status: string;
   for?: string | null;
   base?: string;
+  /** The ignore-whitespace mode the shown patch was fetched in. */
+  ignoreWs?: boolean;
   file?: DiffFile | null;
   truncated?: boolean;
   binary?: DiffBinary | null;
@@ -1232,7 +1310,7 @@ interface PreviewPaneProps {
   relPath: string | null;
   status: VcsChange | null;
   base: string;
-  fetchDiff: (relPath: string, base: string, signal: AbortSignal, opts?: { noBinary?: boolean }) => Promise<DiffResponse>;
+  fetchDiff: (relPath: string, base: string, signal: AbortSignal, opts?: { noBinary?: boolean; ignoreWs?: boolean }) => Promise<DiffResponse>;
   t: TFunc;
   /**
    * Session standard kit (composer): the live-draft selector hook and the
@@ -1263,10 +1341,16 @@ function PreviewPane(props: PreviewPaneProps) {
   const t = props.t;
   const diffSeq = React.useRef(0);
   const [diffSt, setDiffSt] = React.useState<DiffState>({ status: "idle", for: null });
-  // The last patch actually shown, per file. A background refresh that comes
-  // back UNCHANGED must not touch state (no re-render, no scroll jump).
-  // Otherwise a live-change tick makes the open diff visibly "refresh".
-  const lastPatchRef = React.useRef<{ base: string; patch: string } | null>(null);
+  // GitHub-style "ignore whitespace": lines that differ only in whitespace
+  // compare as identical (the host re-fetches with -w / --ignore-all-space).
+  // A toggle is a NEW VIEW of the same file+base: it re-fetches, but it must
+  // not reset the binary byte cache (the bytes are mode-independent).
+  const [ignoreWs, setIgnoreWs] = React.useState(false);
+  // The last patch actually shown, per file + ws mode. A background refresh
+  // that comes back UNCHANGED must not touch state (no re-render, no scroll
+  // jump). Otherwise a live-change tick makes the open diff visibly
+  // "refresh".
+  const lastPatchRef = React.useRef<{ base: string; ws: boolean; patch: string } | null>(null);
   // The binary payload (old|new bytes), kept per (file, base). The first
   // fetch requests it. Later fetches pass noBinary — without the flag, a
   // 1 MB image's base64 re-crosses the wire on every refresh. Committed bytes
@@ -1288,20 +1372,24 @@ function PreviewPane(props: PreviewPaneProps) {
     if (!diffable || !props.relPath) { setDiffSt({ status: "idle", for: null }); lastPatchRef.current = null; binaryRef.current = null; return; }
     const seq = ++diffSeq.current;
     const c = new AbortController();
-    // Same file AND same base = the same view (a live-change refresh). A
-    // base switch (commit → worktree, commit → commit) is a NEW view even
-    // for the same file: allow the loading note + full scroll reset.
+    // Same file AND same base = the same file (a live-change refresh). A
+    // base switch (commit → worktree, commit → commit) is a NEW file: reset
+    // the caches, allow the loading note + full scroll reset. Same file but
+    // a toggled ws mode = a new VIEW: re-fetch, keep the binary cache, and
+    // skip the byte-identity skip-compare across modes.
     const sameFile = diffSt.for === props.relPath && diffSt.base === props.base;
+    const sameView = sameFile && diffSt.ignoreWs === ignoreWs;
     if (!sameFile) { lastPatchRef.current = null; binaryRef.current = null; }
-    if (!sameFile || diffSt.status === "error") setDiffSt({ status: "loading", for: props.relPath, base: props.base });
+    if (!sameView || diffSt.status === "error") setDiffSt({ status: "loading", for: props.relPath, base: props.base, ignoreWs });
     const haveBinary = !!(binaryRef.current && binaryRef.current.key === props.relPath + "@" + props.base);
-    props.fetchDiff(props.relPath, props.base, c.signal, haveBinary ? { noBinary: true } : undefined).then((v) => {
+    props.fetchDiff(props.relPath, props.base, c.signal, { ...(haveBinary ? { noBinary: true } : {}), ...(ignoreWs ? { ignoreWs: true } : {}) }).then((v) => {
       if (seq !== diffSeq.current) return;
-      if (!v || v.patch === "") { lastPatchRef.current = { base: props.base, patch: "" }; setDiffSt({ status: "none", for: props.relPath, base: props.base }); return; }
+      if (!v || v.patch === "") { lastPatchRef.current = { base: props.base, ws: ignoreWs, patch: "" }; setDiffSt({ status: "none", for: props.relPath, base: props.base, ignoreWs }); return; }
       if (v.binary) {
         binaryRef.current = { key: props.relPath + "@" + props.base, binary: v.binary };
-      } else if (sameFile && lastPatchRef.current
+      } else if (sameView && lastPatchRef.current
           && lastPatchRef.current.base === props.base
+          && lastPatchRef.current.ws === ignoreWs
           && lastPatchRef.current.patch !== v.patch) {
         // This fetch went out noBinary (a warm cache) and came back with a
         // CHANGED patch: the worktree/commit bytes the cache holds may be
@@ -1310,17 +1398,17 @@ function PreviewPane(props: PreviewPaneProps) {
         binaryRef.current = null;
       }
       const binary = binaryRef.current && binaryRef.current.key === props.relPath + "@" + props.base ? binaryRef.current.binary : null;
-      if (sameFile && lastPatchRef.current && lastPatchRef.current.base === props.base && lastPatchRef.current.patch === v.patch) return;
-      lastPatchRef.current = { base: props.base, patch: v.patch };
+      if (sameView && lastPatchRef.current && lastPatchRef.current.base === props.base && lastPatchRef.current.ws === ignoreWs && lastPatchRef.current.patch === v.patch) return;
+      lastPatchRef.current = { base: props.base, ws: ignoreWs, patch: v.patch };
       const parsed = parseDiff(v.patch);
-      setDiffSt({ status: "diff", for: props.relPath, file: parsed.files[0] || null, truncated: !!v.truncated, base: v.base, binary: binary || null });
+      setDiffSt({ status: "diff", for: props.relPath, file: parsed.files[0] || null, truncated: !!v.truncated, base: v.base, binary: binary || null, ignoreWs });
     }).catch((e) => {
       if (seq !== diffSeq.current || (e && e.name === "AbortError")) return;
-      setDiffSt({ status: "error", for: props.relPath, error: rpcErrorText(e, t) });
+      setDiffSt({ status: "error", for: props.relPath, base: props.base, ignoreWs, error: rpcErrorText(e, t) });
     });
     return () => { c.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.relPath, props.status, props.base, diffable]);
+  }, [props.relPath, props.status, props.base, diffable, ignoreWs]);
 
   // ---- Section ref: a click or selection in the diff → the short ref the
   // user appends to the chat prompt (or copies). ONE ref, determined by the
@@ -1443,6 +1531,17 @@ function PreviewPane(props: PreviewPaneProps) {
               </span>
             : null}
         <span className="dswFiles_paneHeadBtns">
+          {/* Ignore whitespace: text diffs only (a binary view has no lines). */}
+          {diffSt.status === "diff" && diffSt.file && !diffSt.file.isBinary
+            ? <button type="button"
+                className={"dswFiles_headBtn" + (ignoreWs ? " dswFiles_headBtnOn" : "")}
+                title={t("files.ignoreWsHint")} aria-label={t("files.ignoreWs")}
+                aria-pressed={ignoreWs}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => setIgnoreWs(!ignoreWs)}>
+                {t("files.ignoreWs")}
+              </button>
+            : null}
           {activeRef
             ? <button type="button" className="dswFiles_headBtn"
                 title={t("files.refCopy")} aria-label={t("files.refCopy")}
@@ -1680,12 +1779,17 @@ interface FilesViewProps {
   t?: TFunc;
   listDirectory: (relPath: string, signal: AbortSignal, showHidden: boolean, force: boolean, rev: string | null) => Promise<Listing>;
   sessionId: string | null;
-  fetchDiff: (relPath: string, base: string, signal: AbortSignal, opts?: { noBinary?: boolean }) => Promise<DiffResponse>;
+  fetchDiff: (relPath: string, base: string, signal: AbortSignal, opts?: { noBinary?: boolean; ignoreWs?: boolean }) => Promise<DiffResponse>;
   /** One page of the change log beyond the first (the scroll auto-load):
       `offset` rows back, `limit` rows. A short/empty page is the end.
       Optional — a minimal profile (or old host) without the `log` endpoint
       simply never loads past the first page. */
   fetchLogPage?: (offset: number, limit: number, signal: AbortSignal) => Promise<LogPage>;
+  /** The SELECTED change's full commit message (the change tree's rows carry
+      only the first line): `rev` = the row's commit id, or "worktree" for
+      the working-copy row. Optional — a test harness (or a host without the
+      `desc` endpoint) simply never shows the description strip. */
+  fetchDescription?: (rev: string, signal: AbortSignal) => Promise<{ description: string }>;
   /** The live-update heartbeat: the host's stat gate over the root listing
       (the open file's content is the diff, which the fresh listing's VCS
       block refreshes). */
@@ -1801,7 +1905,20 @@ function FilesView(props: FilesViewProps) {
   const page0Sig = vcsInfo
     ? (vcsInfo.head ? (vcsInfo.head.changeId || vcsInfo.head.id) : "") + "|" + (commits[0] ? (commits[0].commitId || commits[0].id) : "") + "|" + commits.length
     : "";
-  const revLive = revSel && (commitList.some((c) => c.id === revSel) || extraCommits.some((c) => c.id === revSel)) ? revSel : null;
+  // Selection identity is the COMMIT id (`commitId || id`; git rows have no
+  // commitId — their id IS the sha): a divergent change's rows share a change
+  // id, and each row reviews its own commit.
+  const revLive = revSel && (commitList.some((c) => (c.commitId || c.id) === revSel) || extraCommits.some((c) => (c.commitId || c.id) === revSel)) ? revSel : null;
+  // A saved rev from before commit-id selection names a row's CHANGE id:
+  // migrate it to that row's commit id (a divergent change's first row = the
+  // newest, offset 0) so a reviewed change survives the upgrade instead of
+  // silently degrading to the worktree.
+  React.useEffect(() => {
+    if (!revSel || revLive) return;
+    const hit = commitList.find((c) => c.id === revSel);
+    if (hit && hit.commitId) setRevSel(hit.commitId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commitList]);
   const snapshotMode = revLive !== null;
   // The selected change's own changed files, from the SNAPSHOT listing —
   // the worktree's listing carries the worktree's changes, never the
@@ -1921,6 +2038,34 @@ function FilesView(props: FilesViewProps) {
     // ride revLive and snapshotNonce instead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionGone, revLive, snapshotNonce]);
+
+  // The SELECTED change's full message: the tree's rows carry only the first
+  // line (the host's log templates keep the 50-row wire compact, and a raw
+  // multi-line description would break their line-based parse), so the body
+  // is fetched PER SELECTION. revLive IS the row's COMMIT id (a divergent
+  // change's rows each describe their own commit; git rows key on sha);
+  // "worktree" = the working-copy row (the host maps it to jj @ / git HEAD).
+  // The per-view cache keeps re-selecting a change from re-fetching. A
+  // failure degrades to no strip — a message is decoration, not structure,
+  // so it has no error state (the row's first line still stands).
+  const descKey = revLive || "worktree";
+  const [descSt, setDescSt] = React.useState<{ key: string; text: string } | null>(null);
+  const descCacheRef = React.useRef<Map<string, string>>(new Map());
+  React.useEffect(() => {
+    if (sessionGone) { setDescSt(null); return; }
+    const fetchDesc = props.fetchDescription;
+    const cached = descCacheRef.current.get(descKey);
+    if (cached !== undefined) { setDescSt({ key: descKey, text: cached }); return; }
+    if (!fetchDesc) return;
+    const c = new AbortController();
+    fetchDesc(descKey, c.signal).then((v) => {
+      if (c.signal.aborted) return;
+      const text = v && typeof v.description === "string" ? v.description : "";
+      descCacheRef.current.set(descKey, text);
+      setDescSt({ key: descKey, text });
+    }).catch(() => { /* degraded: no strip */ });
+    return () => c.abort();
+  }, [descKey, props.fetchDescription, sessionGone]);
 
   // Keep the module nav cache in sync so a remount from the resource-frame
   // redirect restores the change list (and the worktree tree) synchronously.
@@ -2288,10 +2433,18 @@ function FilesView(props: FilesViewProps) {
     empty
       ? (description ? t("files.emptyCommit") + " " + description : t("files.emptyCommit"))
       : (description || t("files.noDescription"));
-  // key = the graph/React identity (the COMMIT id — a divergent change has
-  // several rows sharing the change id); data = the selection identity (the
-  // CHANGE id — data-files-change, the snapshot fetch, the agent ref token;
-  // on a divergent change both rows select the same change, as jj does).
+  // key = the graph/React identity and data = the SELECTION identity — both
+  // the COMMIT id (data-files-change, the snapshot fetch, the agent ref
+  // token): a divergent change has several rows sharing one change id, and
+  // each row reviews its own commit. A commit id names exactly one commit
+  // on BOTH backends; a bare change id does not — jj's /N change offset is
+  // the CLI's disambiguator for exactly this case (jj glossary: "a change
+  // ID might not unambiguously identify a commit… the most recent commit
+  // could be referred to as xyz/0, while the one before it would be
+  // xyz/1"), and the offset is display-only here (jj-specific, and the
+  // git backend has no such form). id = the DISPLAY identity — the change
+  // id jj's log prints, with the /N change offset appended on
+  // hidden|divergent rows.
   type TreeRow = {
     key: string; data: string; id: string; idPrefix?: string; idRest?: string;
     pills: { bookmarks?: string[]; tags?: string[]; workspaces?: string[]; tracking?: VcsTracking[] };
@@ -2311,17 +2464,23 @@ function FilesView(props: FilesViewProps) {
       // jj's log shows the working-copy node as @ (git has no such node).
       glyph: vcsInfo.backend === "git" ? "○" : "@",
     });
-    for (const c of shownCommits) treeRows.push({
-      key: c.commitId || c.id, data: c.id, id: c.id, idPrefix: c.idPrefix, idRest: c.idRest,
-      // The root's empty description renders blank (not the "(empty)" marker):
-      // it is the log's floor, not a real empty change, so the marker is noise.
-      pills: c, when: c.root ? t("files.rootCommit") : whenOf(c.date, t), desc: c.root ? "" : descOf(!!c.empty, c.description),
-      hidden: c.hidden, divergent: c.divergent, conflict: c.conflict, offset: c.offset,
-      selected: revLive === c.id, select: () => setRevSel(c.id),
-      title: c.root ? t("files.rootCommit") + " — " + c.id : [c.author, c.date].filter(Boolean).join(" · "),
-      // Host-supplied jj glyph; git rows and stale listings fall back to ○.
-      glyph: c.glyph || "○",
-    });
+    for (const c of shownCommits) {
+      // The row's identity is the COMMIT id (git rows have no commitId —
+      // their id IS the sha): a divergent change's two rows share `id`
+      // (the change id) but select, fetch, and review separately.
+      const cid = c.commitId || c.id;
+      treeRows.push({
+        key: cid, data: cid, id: c.id, idPrefix: c.idPrefix, idRest: c.idRest,
+        // The root's empty description renders blank (not the "(empty)" marker):
+        // it is the log's floor, not a real empty change, so the marker is noise.
+        pills: c, when: c.root ? t("files.rootCommit") : whenOf(c.date, t), desc: c.root ? "" : descOf(!!c.empty, c.description),
+        hidden: c.hidden, divergent: c.divergent, conflict: c.conflict, offset: c.offset,
+        selected: revLive === cid, select: () => setRevSel(cid),
+        title: c.root ? t("files.rootCommit") + " — " + c.id : [c.author, c.date].filter(Boolean).join(" · "),
+        // Host-supplied jj glyph; git rows and stale listings fall back to ○.
+        glyph: c.glyph || "○",
+      });
+    }
   }
   // --filez-lanes (the lane count) drives the rows' content indent, clearing
   // the lane column.
@@ -2404,6 +2563,13 @@ function FilesView(props: FilesViewProps) {
           : null)
     : null;
 
+  // The strip's text: the fetched full message for the CURRENT selection,
+  // shown whenever it is non-empty — INCLUDING subject-only messages. The
+  // first line duplicates the row's text, but the user chose always-visible
+  // over body-only: in a single-line history the body-only rule made the
+  // feature invisible (it never rendered for the top rows).
+  const descShown = descSt && descSt.key === descKey && descSt.text ? descSt.text : null;
+
   // The reload button clears the root listing and the latched dead-session
   // flag so a retry can re-resolve the session (a fresh one may have come up).
   const reload = () => {
@@ -2415,6 +2581,10 @@ function FilesView(props: FilesViewProps) {
     setSnapshot(null);
     setSnapshotErr(null);
     setSnapshotNonce((n) => n + 1);
+    // The ⟳ is the one user gesture that claims a fresh read: the per-view
+    // description cache goes with it (a worktree message may have moved).
+    descCacheRef.current.clear();
+    setDescSt(null);
   };
 
   // The nav column's header: the root path row (dim directory, full-ink
@@ -2502,6 +2672,13 @@ function FilesView(props: FilesViewProps) {
                 />
                 {/* The changed files: fill the rest of the nav column. */}
                 <div className="dswFiles_filesPane">
+                  {/* The selected change's full message (the rows carry only
+                      the first line): shown while the change is selected,
+                      above its files — a property of the change, not the
+                      file, so it is not in the diff pane's head row. */}
+                  {descShown
+                    ? <div className="dswFiles_changeDescFull" data-files-change-desc>{descShown}</div>
+                    : null}
                   <div className="dswFiles_filesPaneHead" data-files-files-pane-head>
                     {t("files.changedFiles")}{changeFiles ? " · " + String(changeFiles.length) : ""}
                   </div>
@@ -2664,8 +2841,9 @@ interface RightPaneBodyProps {
   useTabInfo: UseTabInfo;
   sessionId: string | null;
   listDirectory: (relPath: string, signal: AbortSignal, showHidden: boolean, force: boolean, rev: string | null) => Promise<Listing>;
-  fetchDiff: (relPath: string, base: string, signal: AbortSignal, opts?: { noBinary?: boolean }) => Promise<DiffResponse>;
+  fetchDiff: (relPath: string, base: string, signal: AbortSignal, opts?: { noBinary?: boolean; ignoreWs?: boolean }) => Promise<DiffResponse>;
   fetchLogPage?: (offset: number, limit: number, signal: AbortSignal) => Promise<LogPage>;
+  fetchDescription?: (rev: string, signal: AbortSignal) => Promise<{ description: string }>;
   tick: (dirs: string[], openFile: string | null, openMtime: number | null, deep: boolean, showHidden: boolean, signal: AbortSignal) => Promise<TickResponse>;
   t: TFunc;
   // The composer's input face, standard props of this slot (the framework
@@ -2716,6 +2894,7 @@ function RightPaneBody(props: RightPaneBodyProps) {
     listDirectory={props.listDirectory}
     fetchDiff={props.fetchDiff}
     fetchLogPage={props.fetchLogPage}
+    fetchDescription={props.fetchDescription}
     tick={props.tick}
     t={props.t}
     useInput={props.useInput ?? null}
@@ -2769,14 +2948,19 @@ function apply(ctx: ChangestabContext): void {
     listDirectory: (relPath: string, signal: AbortSignal, showHidden: boolean, force: boolean, rev: string | null) =>
       connection.rpc.call(BROWSE_CHANNEL, "list", { sessionId, relPath, showHidden, force: force === true, ...(rev ? { rev } : {}) }, signal)
         .then((v) => unwrap<Listing>(v)),
-    fetchDiff: (relPath: string, base: string, signal: AbortSignal, opts?: { noBinary?: boolean }) =>
-      connection.rpc.call(BROWSE_CHANNEL, "diff", { sessionId, relPath, base, ...(opts && opts.noBinary ? { noBinary: true } : {}) }, signal)
+    fetchDiff: (relPath: string, base: string, signal: AbortSignal, opts?: { noBinary?: boolean; ignoreWs?: boolean }) =>
+      connection.rpc.call(BROWSE_CHANNEL, "diff", { sessionId, relPath, base, ...(opts && opts.noBinary ? { noBinary: true } : {}), ...(opts && opts.ignoreWs ? { ignoreWs: true } : {}) }, signal)
         .then((v) => unwrap<DiffResponse>(v)),
     // The change log's scroll auto-load: one page beyond the first. A short
     // or empty page (or a host without the endpoint) ends the log.
     fetchLogPage: (offset: number, limit: number, signal: AbortSignal) =>
       connection.rpc.call(BROWSE_CHANNEL, "log", { sessionId, offset, limit }, signal)
         .then((v) => unwrap<LogPage>(v)),
+    // The SELECTED change's full message (the tree's rows carry only the
+    // first line — the host's log templates keep the wire compact).
+    fetchDescription: (rev: string, signal: AbortSignal) =>
+      connection.rpc.call(BROWSE_CHANNEL, "desc", { sessionId, rev }, signal)
+        .then((v) => unwrap<{ description: string }>(v)),
     // The live-update heartbeat (the host's stat gate; deep skips it). The
     // open file is the diff, refreshed by the fresh listing's VCS block, so
     // no per-file content epoch is requested.
@@ -2837,4 +3021,4 @@ export { apply };
 // Test-only seam. The cordis loader ignores it (it reads apply/inject/name
 // only). This export exposes the pure preview helpers so
 // test/client.test.mjs can unit-test them.
-export const __test = { groupChangedFiles, typeLabel, formatBytes, loadState, saveState, parseDiff, displayRows, gapAfter, glyphTone, changeGlyph, refPillList, refPillCount, whenOf, navCacheSet, navCacheGet, navCacheDrop, DiffView, unifiedCells, unifiedPairs, intraLineDiff, intraTokens, realPathOf, unwrap, isSessionGone, rpcErrorText, buildFileRef, mentionOf, diffSelRange, REF_TEXT_MAX, parseFileAddress, fileAddressBasename, diffLayoutNarrow, commitRefToChat, sessionFileAddress, RightPaneBody, PreviewPane, pathPartsOf, layoutChangeGraph, WORKTREE_KEY, GONE_RETRY_MAX, goneRetryDelay };
+export const __test = { groupChangedFiles, typeLabel, formatBytes, loadState, saveState, parseDiff, displayRows, matchRun, modDimKind, gapAfter, glyphTone, changeGlyph, refPillList, refPillCount, whenOf, navCacheSet, navCacheGet, navCacheDrop, DiffView, unifiedCells, unifiedPairs, intraLineDiff, intraTokens, realPathOf, unwrap, isSessionGone, rpcErrorText, buildFileRef, mentionOf, diffSelRange, REF_TEXT_MAX, parseFileAddress, fileAddressBasename, diffLayoutNarrow, commitRefToChat, sessionFileAddress, RightPaneBody, PreviewPane, pathPartsOf, layoutChangeGraph, WORKTREE_KEY, GONE_RETRY_MAX, goneRetryDelay };

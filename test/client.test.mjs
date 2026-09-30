@@ -297,7 +297,7 @@ const childText = (n) => Array.isArray(n.c) ? n.c.filter((x) => typeof x === "st
   assert.strictEqual(rows.length, 4, "rows: worktree + 3 commits");
   assert.strictEqual(rows[0].p["data-files-change"], "worktree", "row 1 = the working copy");
   assert.strictEqual(rows[0].p["aria-selected"], true, "worktree selected by default (no rev)");
-  assert.deepStrictEqual(rows.slice(1).map((r) => r.p["data-files-change"]), ["aaaa11111111", "bbbb22222222", "cccc33333333"], "commit rows in order (newest first)");
+  assert.deepStrictEqual(rows.slice(1).map((r) => r.p["data-files-change"]), ["f11e978bb855", "2c3d4e5f6a7b", "9a8b7c6d5e4f"], "commit rows select by the COMMIT id (newest first)");
   assert.strictEqual(rows[1].p["aria-selected"], false, "a commit is not selected by default");
   // Node characters (jj's own log glyphs, host-supplied): the jj worktree
   // row is @, the plain commit ○, the conflict commit ×, and the EMPTY
@@ -420,17 +420,18 @@ const childText = (n) => Array.isArray(n.c) ? n.c.filter((x) => typeof x === "st
   });
   const manyRows = findEl(viewMany, (n) => typeof n.p?.["data-files-change"] === "string" && n.t === "button");
   assert.strictEqual(manyRows.length, 26, "25 commits → all 25 rows + the worktree row render (no fold)");
-  assert.strictEqual(manyRows[25].p["data-files-change"], "c24aaaaaaaa", "the 25th (oldest) commit row is present");
+  assert.strictEqual(manyRows[25].p["data-files-change"], "e2423456789abcd", "the 25th (oldest) commit row is present (selected by its commit id)");
   assert.strictEqual(findEl(viewMany, (n) => typeof n.p?.className === "string" && n.p.className.includes("dswFiles_changeMore")).length, 0, "no elision row");
 }
 
 // 5d) A divergent change + a fork (the boxcar3d screenshot shape): one
-//     change id, two commits — rows key on the COMMIT id (unique React key +
-//     graph node) but select by the CHANGE id (data-files-change, snapshot
-//     fetch). The /N offset renders after the id (hidden takes label
-//     precedence over divergent), the sync sigils + @remote + workspace
-//     names render as their pill variants, and the fork's two children sit
-//     on separate lanes.
+//     change id, two commits — rows key AND select on the COMMIT id
+//     (data-files-change, the snapshot fetch, the agent ref token): each of
+//     the divergent pair reviews its own commit, so a saved rev selects
+//     exactly one of the two rows. The /N offset renders after the id
+//     (hidden takes label precedence over divergent), the sync sigils +
+//     @remote + workspace names render as their pill variants, and the
+//     fork's two children sit on separate lanes.
 {
   const vcsD = {
     ok: true, backend: "jj",
@@ -457,8 +458,24 @@ const childText = (n) => Array.isArray(n.c) ? n.c.filter((x) => typeof x === "st
   const dRows = findEl(viewD, (n) => typeof n.p?.["data-files-change"] === "string" && n.t === "button");
   assert.strictEqual(dRows.length, 5, "divergent+fork: worktree + 4 rows");
   assert.deepStrictEqual(dRows.map((r) => r.p["data-files-change"]),
-    ["worktree", "ws1xskmq0000", "ws1xskmq0000", "qsvyormx9999", "bbbb22222222"],
-    "divergent change: BOTH rows select by the change id (data-files-change)");
+    ["worktree", "db4302681234", "3efe5a9e1234", "ac06e11a9999", "bbbb22222222c"],
+    "divergent change: each row selects by its OWN commit id (data-files-change)");
+  // Per-commit selection: a saved rev is a COMMIT id; of the divergent
+  // change's two rows, only the matching row is selected (the old behavior
+  // keyed on the shared change id lit both rows up).
+  globalThis.localStorage.setItem("changestab/files/sess-vcs-d",
+    JSON.stringify({ selected: null, navW: null, rev: "3efe5a9e1234", collapsed: false }));
+  const viewDSel = registered.comp({
+    t: (k) => k,
+    sessionId: "sess-vcs-d",
+    listDirectory: (p) => Promise.resolve(Object.assign({ root: "/ws", relPath: p }, listingD)),
+    tabActions: { openTab: () => {}, openResource: () => {} },
+  });
+  const selRows = findEl(viewDSel, (n) => typeof n.p?.["data-files-change"] === "string" && n.t === "button");
+  assert.strictEqual(selRows[0].p["aria-selected"], false, "saved commit rev: the worktree row is not selected");
+  assert.strictEqual(selRows[1].p["aria-selected"], false, "ws1xskmq/0 (the sibling commit) is NOT selected");
+  assert.strictEqual(selRows[2].p["aria-selected"], true, "ws1xskmq/1 (the saved commit's own row) IS selected");
+  globalThis.localStorage.removeItem("changestab/files/sess-vcs-d");
   // The /N change offset: bold span after the id, on the divergent/hidden rows only.
   const offsets = (row) => findEl(row, (n) => n.t === "span" && n.p?.className === "dswFiles_changeIdOff").map((n) => String(n.c));
   assert.deepStrictEqual(offsets(dRows[1]), ["/0"], "ws1xskmq/0: the offset renders as /0");
@@ -743,6 +760,56 @@ const fx = (name) => readFileSync(fileURLToPath(new URL("./fixtures/diffs/" + na
     ["del", "ctx", "add"], "pairing: a ctx line breaks the block (no cross-ctx pairing)");
   assert.deepStrictEqual(D.displayRows({ rows: [mk("add", 1, "x"), mk("add", 2, "y")] }).map((d) => d.type),
     ["add", "add"], "pairing: an add run alone stays adds"); }
+// Same-line pairing: a line that moved inside a block pairs with its own
+// copy instead of smearing into its neighbors (the re-alignment case — an
+// Odin struct whose `=` column moved with a new field). The leftover
+// positional rule still applies to the non-identical rows.
+{ const mk = (k, n, t2) => ({ k, text: t2, oldNo: k === "add" ? null : n, newNo: k === "del" ? null : n, noNewline: false });
+  const rows = D.displayRows({ rows: [
+    mk("del", 1, "sim = sim,"), mk("del", 2, "mesh = mesh,"), mk("del", 3, "fit = fit,"),
+    mk("add", 1, "sim = sim,"), mk("add", 2, "mesh = mesh,"), mk("add", 3, "debris = debris,"), mk("add", 4, "fit = fit,")] });
+  assert.deepStrictEqual(rows.map((d) => d.type), ["mod", "mod", "add", "mod"], "pairing: identical lines pair, the real insertion stays a solo add");
+  assert.deepStrictEqual(rows.filter((d) => d.type === "mod").map((d) => [d.old.text, d.nw.text]),
+    [["sim = sim,", "sim = sim,"], ["mesh = mesh,", "mesh = mesh,"], ["fit = fit,", "fit = fit,"]], "pairing: each line pairs with its identical copy");
+  assert.strictEqual(rows[2].nw.text, "debris = debris,", "pairing: the solo add is the real insertion");
+  // A swap (a line moves down within the block): the identical copies pair
+  // even though their positions cross; the display keeps the new file's order.
+  const swapped = D.displayRows({ rows: [mk("del", 1, "x"), mk("del", 2, "a"), mk("add", 1, "a"), mk("add", 2, "x")] });
+  assert.deepStrictEqual(swapped.map((d) => d.type), ["add", "mod", "del"], "pairing: a move within a block reads as add / mod / del in new-file order");
+  assert.strictEqual(swapped[1].old.text, "x", "pairing: the mod row pairs the identical 'x' copies");
+  assert.strictEqual(swapped[1].nw.text, "x", "pairing: the mod row pairs the identical 'x' copies");
+  // The load-bearing re-alignment: the `=` column moved, so NO pair is
+  // byte-identical — matching must be whitespace-normalized, or every line
+  // smears into its shifted neighbor (the false-change the toggle alone
+  // does not fix, because the default view is fetched WITHOUT -w).
+  const re = D.displayRows({ rows: [
+    mk("del", 1, "sim     = sim,"), mk("del", 2, "mesh    = mesh,"), mk("del", 3, "fitness = fitness,"),
+    mk("add", 1, "sim         = sim,"), mk("add", 2, "mesh        = mesh,"), mk("add", 3, "debris_mesh = debris,"), mk("add", 4, "fitness     = fitness,")] });
+  assert.deepStrictEqual(re.map((d) => d.type), ["mod", "mod", "add", "mod"], "pairing: re-aligned lines pair by normalized identity, the insertion stays a solo add");
+  assert.strictEqual(re[0].nw.text, "sim         = sim,", "pairing: the pair crosses the whitespace difference");
+  assert.ok(re.every((d) => d.type !== "mod" || D.modDimKind(d.old.text, d.nw.text) !== null), "pairing: every re-aligned mod row is dim-eligible (ws)");
+  // Above the O(n·m) cap the identical-text scan is skipped (pathological
+  // block) — positional pairing alone must still produce the right row count.
+  const big = [];
+  for (let i = 0; i < 401; i++) big.push(mk("del", i + 1, "same-line"));
+  for (let i = 0; i < 250; i++) big.push(mk("add", i + 1, "same-line"));
+  const bigRows = D.displayRows({ rows: big });
+  assert.strictEqual(bigRows.length, 401, "pairing: above the O(n·m) cap → the positional fallback keeps one row per del");
+  assert.strictEqual(bigRows.filter((d) => d.type === "mod").length, 250, "pairing: cap fallback pairs positionally"); }
+// The dimmed "false change": identical or whitespace-only mod pairs get the
+// neutral tint (modDimKind), a real change keeps the full red/green.
+{ assert.strictEqual(D.modDimKind("a   b", "a b"), "ws", "dim: a whitespace-only difference → ws");
+  assert.strictEqual(D.modDimKind("same", "same"), "moved", "dim: identical lines → moved");
+  assert.strictEqual(D.modDimKind("abc", "abd"), null, "dim: a real change → null"); }
+// unifiedPairs (the narrow view) uses the same run matching: the intra-line
+// spans pair identical copies, not positional neighbors.
+{ const mk = (k, n, t2) => ({ k, text: t2, oldNo: k === "add" ? null : n, newNo: k === "del" ? null : n, noNewline: false });
+  const dA = mk("del", 1, "a"), dB = mk("del", 2, "b"), aA = mk("add", 1, "b"), aB = mk("add", 2, "a");
+  const up = D.unifiedPairs({ rows: [dA, dB, aA, aB] });
+  assert.strictEqual(up.get(dA)?.other, aB, "unifiedPairs: del 'a' pairs with its identical add copy");
+  assert.strictEqual(up.get(dA)?.side, "old", "unifiedPairs: the del row carries side old");
+  assert.strictEqual(up.get(aA)?.other, dB, "unifiedPairs: add 'b' pairs with its identical del copy");
+  assert.strictEqual(up.get(aA)?.side, "new", "unifiedPairs: the add row carries side new"); }
 
 // Intra-line diff (BUG-003, reworked per BUG-010 after checking the
 // established renderers — git xdiff word-diff, diff-highlight, jsdiff

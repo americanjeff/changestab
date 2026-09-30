@@ -6,7 +6,7 @@ import assert from "node:assert";
 import {
   git, parseNameStatus, parseUntracked, parseUnmerged, parseLogNumstat, parseForEachRef,
   unquoteGitPath, insideWorkspace, isBadRevision, gitWorkspaceStatus, gitUntrackedDiff,
-  gitCommitChanges, gitSnapshotListing, gitFileShow, gitLogPage,
+  gitCommitChanges, gitSnapshotListing, gitFileShow, gitLogPage, gitDescription,
 } from "../dist/git.js";
 import { WorkspacePathError } from "../dist/containment.js";
 import { __test } from "../dist/index.js";
@@ -369,10 +369,65 @@ const gcall = (endpoint, payload) => __test.makeBrowseHandler(gitCtx)(endpoint, 
   n++;
 }
 {
+  // ignoreWs: the host maps it to --ignore-all-space (jj's analog is -w).
+  // A whitespace-only change shows without the flag and collapses with it;
+  // the real insertion in the same hunk survives.
+  await writeFile(join(ws, "ws.txt"), "one  two\n");
+  ok((await runGit(ws, ["add", "ws.txt"])).code === 0, "stage ws.txt");
+  ok((await runGit(ws, ["commit", "-qm", "ws base"])).code === 0, "ws base commit");
+  await writeFile(join(ws, "ws.txt"), "one two\nthree\n");
+  const raw = await gcall("diff", { sessionId: "git-sess", relPath: "ws.txt", base: "worktree" });
+  ok(raw.ok && raw.value.patch.includes("-one  two") && raw.value.patch.includes("+one two"), "worktree diff without ignoreWs shows the ws-only change: " + raw.value.patch);
+  const w = await gcall("diff", { sessionId: "git-sess", relPath: "ws.txt", base: "worktree", ignoreWs: true });
+  const delLines = w.value.patch.split("\n").filter((l) => l.startsWith("-") && !l.startsWith("---"));
+  ok(w.ok && w.value.patch.includes("+three") && delLines.length === 0, "ignoreWs collapses the ws-only change (only the real add survives, no del lines): " + w.value.patch);
+  n++;
+}
+{
   const r = await gcall("list", { sessionId: "git-sess", relPath: "../escape" });
   ok(!r.ok && r.error.code === "workspace-invalid-path" && r.error.details.path === "../escape", "containment → workspace-invalid-path (envelope-legal)");
   n++;
 }
+// ── desc: the selected change's full message ───────────────────────────
+// The tree's rows carry only the first line; the endpoint returns the full
+// message for one rev. A backend read failure DEGRADES to "" (a message is
+// decoration, not structure — the row's first line still stands); only a
+// malformed rev is an error.
+{
+  const r = await gcall("desc", { sessionId: "git-sess", rev: topSha.slice(0, 12) });
+  ok(r.ok, "desc@rev ok: " + JSON.stringify(r?.error ?? null));
+  ok(r.value.description === "top commit", "single-line message, trailing newline normalized away: " + JSON.stringify(r.value));
+  n++;
+}
+{
+  // A multi-line message (git joins -m flags with a blank line), committed
+  // AFTER the diffs above (this commit also folds ws's pending worktree
+  // edits — nothing below reads ws's history).
+  await writeFile(join(ws, "d1.txt"), "desc\n");
+  await runGit(ws, ["add", "-A"]);
+  ok((await runGit(ws, ["commit", "-qm", "subject", "-m", "body line 2"])).code === 0, "multi-line commit created");
+  const dSha = (await runGit(ws, ["rev-parse", "HEAD"])).out.trim();
+  const r = await gcall("desc", { sessionId: "git-sess", rev: dSha.slice(0, 12) });
+  ok(r.ok && r.value.description === "subject\n\nbody line 2", "full message: subject + blank + body, trailing newlines stripped: " + JSON.stringify(r?.value ?? r));
+  const rw = await gcall("desc", { sessionId: "git-sess", rev: "worktree" });
+  ok(rw.ok && rw.value.description === "subject\n\nbody line 2", "'worktree' = HEAD's message: " + JSON.stringify(rw?.value ?? rw));
+  n++;
+}
+{ const r = await gcall("desc", { sessionId: "git-sess", rev: "0123456789abcdef" });
+  ok(r.ok && r.value.description === "", "unresolvable rev DEGRADES to '' (not an error): " + JSON.stringify(r).slice(0, 200));
+  n++; }
+{ const r = await gcall("desc", { sessionId: "git-sess", rev: "a@ & all()" });
+  ok(!r.ok && r.error.code === "bad-request", "revset injection via rev → bad-request (id alphabet)");
+  n++; }
+{ const r = await gcall("desc", { sessionId: "git-sess", rev: "abc12" });
+  ok(!r.ok && r.error.code === "bad-request", "too-short rev → bad-request");
+  n++; }
+{ const r = await gcall("desc", { sessionId: "git-sess", rev: "commit" });
+  ok(!r.ok && r.error.code === "bad-request", "'commit' (a diff BASE keyword) is not a rev → bad-request");
+  n++; }
+{ const r = await gcall("desc", { rev: topSha.slice(0, 12) });
+  ok(!r.ok && r.error.code === "bad-request", "missing sessionId → bad-request");
+  n++; }
 
 // A workspace dir deleted out from under the session makes execFile fail
 // with spawn ENOENT even though git IS on PATH. "git-missing" is a
@@ -398,6 +453,7 @@ ok(st2.ok, "no-commits repo status ok: " + JSON.stringify(st2).slice(0, 300));
 ok(st2.head.id === "" && st2.head.marker === "HEAD", "head degrades to the empty marker");
 ok(st2.changes.length === 1 && st2.changes[0].path === "only.txt" && st2.changes[0].status === "U", "everything is U");
 ok(st2.commits.length === 0, "no commits yet → empty dropdown list");
+ok((await gitDescription(ws2, "HEAD")) === "", "no-commits repo's HEAD message → '' (git-error degraded, not a throw)");
 const ud2 = await gitUntrackedDiff(ws2, "only.txt");
 ok(ud2.ok && ud2.value.includes("+hello"), "U diff works with no HEAD at all (--no-index needs no repo state)");
 

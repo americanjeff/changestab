@@ -66,6 +66,7 @@ clicking the buttons never collapses the live selection.*/
 .dswFiles_paneHeadBtns{display:flex;gap:2px;align-items:center;flex:none}
 .dswFiles_headBtn{cursor:pointer;background:0 0;border:none;border-radius:5px;padding:1px 5px;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
 .dswFiles_headBtn:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
+.dswFiles_headBtnOn{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
 .dswFiles_diffMeta{padding-top:2px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 .dswFiles_diffBinaryRow{display:flex;gap:8px;padding:8px;flex:1 1 0;min-height:0}
 .dswFiles_diffBinaryPane{flex:1 1 0;min-width:0;min-height:0;display:flex;flex-direction:column;gap:4px}
@@ -89,6 +90,12 @@ clicking the buttons never collapses the live selection.*/
 .dswFiles_cellDelN{background:rgba(229,83,75,.07)}
 .dswFiles_cellAddO{background:rgba(46,160,67,.07)}
 .dswFiles_cellAddN{background:rgba(46,160,67,.16)}
+/*A mod row whose lines are identical (a move) or differ only in whitespace
+(a re-alignment): a neutral tint that OVERRIDES the add/del color, so a
+no-content-change reads as minor. After the cell colors so it wins the
+cascade.*/
+.dswFiles_cellModDim{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12))}
+.dswFiles_noModDim{color:var(--dsw-alias-label-secondary)}
 /*Intra-line change spans in a mod row: a stronger tint than the row-level cells so a few-character edit stands out.*/
 .dswFiles_spanDel{background:rgba(229,83,75,.45)}
 .dswFiles_spanAdd{background:rgba(46,160,67,.45)}
@@ -112,6 +119,14 @@ pointer-capture pattern; the drag writes the log pane's height directly).*/
 .dswFiles_hDivider:hover::before,.dswFiles_hDivider.dswFiles_dividerActive::before{background:var(--dsw-alias-state-business-primary)}
 .dswFiles_filesPane{flex:1 1 0;min-height:96px;display:flex;flex-direction:column;min-width:0}
 .dswFiles_filesPaneHead{flex:none;padding:4px 8px 2px 2px;font-size:10.5px;line-height:14px;color:var(--dsw-alias-label-tertiary)}
+/*The selected change's full message (the tree's rows carry only the first
+line): PLAIN text in the shell's proportional font — the message's own blank
+lines are its paragraph structure, so pre-wrap keeps the author's layout
+without interpreting markdown (commit text is untrusted input to this
+read-only viewer; rendering it to HTML would need a sanitizer for nothing).
+Self-scrolling, capped, so a long body never pushes the file list out of
+view. Shown for any non-empty message, subject included.*/
+.dswFiles_changeDescFull{flex:none;margin:0;padding:2px 8px 4px 2px;font-size:11.5px;line-height:15px;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word;max-height:120px;overflow-y:auto}
 .dswFiles_filesScroll{flex:1 1 0;min-height:0;overflow:auto;scrollbar-gutter:stable;padding:0 8px 8px 0;margin-left:2px}
 /*Change tree nav — the change log pane: the working-copy
 row on top, a stack of commit rows below (newest first), each row drawing

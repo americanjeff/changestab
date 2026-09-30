@@ -51,7 +51,10 @@ const DSH_BIN = process.env.E2E_DSH || "dsh";
 // (they live in lazy chunks, not the main bundle) and every role/data-attr
 // selector still resolve; the host also gained a plugin peerDependency
 // gate (see the dsh-image-settings skip in boot logs).
-const DSH_VERSION = "0.2.0-rc.1";
+// Re-verified for 0.2.0-rc.2: both hashed classes
+// (.ZuhsRW_crumbEditZone, .uV2eYG_input) and the Add workspace / Send
+// message labels still resolve in the published build; no selector changes.
+const DSH_VERSION = "0.2.0-rc.2";
 function checkDshVersion() {
   const actual = execFileSync(DSH_BIN, ["--version"], { encoding: "utf8" }).trim();
   assert.equal(actual, DSH_VERSION, `dsh version changed (${actual} != ${DSH_VERSION}): the e2e session-opening selectors ride on dsh's own UI and need reworking -- re-verify against the new build, then bump DSH_VERSION.`);
@@ -720,8 +723,8 @@ async function j22_dividerDrag(u) {
 // ancestry, so a fork child with no descendant back on the path was pruned
 // and never showed. The host now uses jj's own default log scope
 // (`builtin_log() ~ @` — exactly what a plain `jj log` shows), so the
-// off-path branch renders on its own lane. Rows key on the COMMIT id but
-// select by the CHANGE id; a plain branch is NOT divergent, so no
+// off-path branch renders on its own lane. Rows key and select on the
+// COMMIT id; a plain branch is NOT divergent, so no
 // (divergent)/(hidden) labels or /N offsets render (that path is unit-tested).
 async function j23_branching(u) {
   const root = u.root();
@@ -747,8 +750,8 @@ async function j23_branching(u) {
   // The fork children's bookmarks render as pills on their rows.
   const pillTexts = await root.locator(".dswFiles_changePill").evaluateAll((els) => els.map((e) => e.textContent.trim()));
   for (const bm of ["base", "c1", "c2"]) ok(pillTexts.includes(bm), `bookmark pill renders: ${bm} (got ${JSON.stringify(pillTexts)})`);
-  // Select the OFF-PATH branch by its CHANGE id: the file list switches to
-  // that change's snapshot and its file's diff renders.
+  // Select the OFF-PATH branch by its COMMIT id: the file list switches to
+  // that commit's snapshot and its file's diff renders.
   const c1row = rows.filter({ hasText: "fork child 1" });
   await c1row.click();
   await u.until(async () => (await root.locator('li[data-files-change-file="c1.txt"]').count()) === 1, "the off-path branch's snapshot file list");
@@ -784,11 +787,13 @@ async function j24_pagination(u) {
   const allDescs = await descsOf();
   ok(allDescs.length === 56, "56 rows total after the append");
   ok(allDescs.includes("log-c1"), "the oldest commit (log-c1) loaded after scrolling");
-  // The ROOT is the log's floor: it renders as the last row with a localized
+  // The ROOT is the log's floor: it renders as the LAST row with a localized
   // "root" label in the date slot — NOT the root's epoch author date. The
   // "no 1970" check is locale-independent (en "root" / zh "根修订", neither
-  // carries the epoch year the bare whenOf would render).
-  const rootRow = root.locator('[data-files-change="zzzzzzzzzzzz"]');
+  // carries the epoch year the bare whenOf would render). (Its data attribute
+  // is the root's commit id, not a fixed value, so it is addressed by
+  // position.)
+  const rootRow = rows.last();
   ok((await rootRow.count()) === 1, "the root row renders (the log's floor)");
   const rootWhen = ((await rootRow.locator(".dswFiles_changeWhen").innerText().catch(() => "")) || "").trim();
   ok(rootWhen.length > 0 && !rootWhen.includes("1970"), "the root row's date slot is a label, not the epoch date: " + JSON.stringify(rootWhen));

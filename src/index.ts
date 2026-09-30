@@ -17,8 +17,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Context } from "@deepseek-ai/cordis";
 import { listDirectory } from "./filesystem.js";
 import { resolveInWorkspace } from "./containment.js";
-import { jj, jjWorkspaceStatus, jjCommitChanges, jjLogPage, jjEscapePath, type ChangeEntry, type JjWorkspaceStatusResult } from "./jj.js";
-import { git, gitWorkspaceStatus, gitUntrackedDiff, gitSnapshotListing, gitFileShow, gitCommitChanges, gitLogPage, gitLiteralPath, isBadRevision, parseNameStatus, type GitWorkspaceStatusResult } from "./git.js";
+import { jj, jjWorkspaceStatus, jjCommitChanges, jjLogPage, jjDescription, jjEscapePath, type ChangeEntry, type JjWorkspaceStatusResult } from "./jj.js";
+import { git, gitWorkspaceStatus, gitUntrackedDiff, gitSnapshotListing, gitFileShow, gitCommitChanges, gitLogPage, gitDescription, gitLiteralPath, isBadRevision, parseNameStatus, type GitWorkspaceStatusResult } from "./git.js";
 import { snapshotListing, fileShow, worktreeFileShow, REV_RE, type FileShowValue } from "./snapshot.js";
 import type { ListingValue } from "./filesystem.js";
 
@@ -325,6 +325,12 @@ function envelopeError(error: { code?: string; message?: string; details?: Recor
 //     change log beyond the first `limit` rows (the client's scroll
 //     auto-load): the same rows/order the `list` vcs block's `commits`
 //     carries, starting `offset` back. A short/empty page is the end.
+//   desc     { sessionId, rev } → { description }. The SELECTED change's
+//     full commit message (the change tree's rows carry only the first
+//     line). rev: "worktree" (the working-copy row: jj @ / git HEAD) or
+//     a change/commit id (the diff-base alphabet — no revset injection).
+//     A backend read failure degrades to "" (the client hides its strip);
+//     only a malformed rev is an error.
 //   diff     { sessionId, relPath, base: "worktree"|"commit"|<id> } →
 //     { patch, truncated, base }. The host computes it (the old file version
 //     exists only in the VCS object store). Empty patch = "no changes"
@@ -352,15 +358,19 @@ function makeBrowseHandler(ctx: Context): (endpoint: string, payload: BrowsePayl
         const ws = await resolveWorkspace(ctx, p.sessionId);
         if ("error" in ws) return { ok: false, error: ws.error };
         const relPath = typeof p.relPath === "string" ? p.relPath : "";
-        // Snapshot mode: `rev` (a change id, id-alphabet-validated, never a
-        // revset) → the listing is that commit's tree, not the worktree's.
+        // Snapshot mode: `rev` (a change id or COMMIT id, id-alphabet-
+        // validated, never a revset) → the listing is that commit's tree, not
+        // the worktree's. The client sends COMMIT ids (unique on both
+        // backends): a divergent change's rows share a change id, which is
+        // ambiguous — the /N offset that disambiguates it is jj's display
+        // form, not a rev we accept here.
         let rev: string | null = null;
         if (p.rev !== undefined && p.rev !== null) {
           // "worktree"/"commit" are diff's BASE keywords, not revisions.
           // A rev that passes the id alphabet but names them is still
           // invalid.
           if (typeof p.rev === "string" && p.rev !== "worktree" && p.rev !== "commit" && REV_RE.test(p.rev)) rev = p.rev;
-          else return { ok: false, error: { code: "bad-request", message: "rev must be a change id" } };
+          else return { ok: false, error: { code: "bad-request", message: "rev must be a change or commit id" } };
         }
         // Snapshot mode needs the backend to pick the tree reader. The code
         // probes VCS first (the result doubles as the enrichment). Worktree
@@ -451,6 +461,44 @@ function makeBrowseHandler(ctx: Context): (endpoint: string, payload: BrowsePayl
         return { ok: false, error: { code: "io-error", message: e?.message ?? String(error) } };
       }
     }
+    if (endpoint === "desc") {
+      // The selected change's full commit message (the tree's rows carry
+      // only the first line — the log templates keep the wire compact).
+      // { sessionId, rev } → { description }. rev: "worktree" (the
+      // working-copy row: jj @ / git HEAD) or a change/commit id —
+      // validated to the diff-base alphabet before it reaches the arg
+      // array (no revset injection). A backend read failure degrades to
+      // "" (the client then shows nothing; the row's first line still
+      // stands); a non-VCS workspace is just an empty description.
+      try {
+        const ws = await resolveWorkspace(ctx, p.sessionId);
+        if ("error" in ws) return { ok: false, error: ws.error };
+        // "worktree" is this endpoint's keyword; "commit" is diff's BASE
+        // keyword, not a revision (the same rejection list's `list` uses).
+        const rev = p.rev === "worktree"
+          ? "worktree"
+          : (typeof p.rev === "string" && p.rev !== "commit" && REV_RE.test(p.rev) ? p.rev : null);
+        if (!rev)
+          return { ok: false, error: { code: "bad-request", message: "rev must be 'worktree' or a change or commit id" } };
+        let backend = backendVerdict.get(ws.root);
+        if (backend !== "jj" && backend !== "git") {
+          const vcs = await vcsStatus(ws.root);
+          backend = vcs.ok === true ? vcs.backend : "none";
+          backendVerdict.set(ws.root, backend);
+        }
+        const description = backend === "jj"
+          ? await jjDescription(ws.root, rev === "worktree" ? "@" : rev)
+          : backend === "git"
+            ? await gitDescription(ws.root, rev === "worktree" ? "HEAD" : rev)
+            : "";
+        return { ok: true, value: { description } };
+      } catch (error) {
+        const e = error as { name?: string; message?: string } | null;
+        if (e?.name === "WorkspacePathError")
+          return { ok: false, error: { code: "forbidden", message: e.message ?? "" } };
+        return { ok: false, error: { code: "io-error", message: e?.message ?? String(error) } };
+      }
+    }
     if (endpoint === "diff") {
       try {
         const ws = await resolveWorkspace(ctx, p.sessionId);
@@ -465,6 +513,9 @@ function makeBrowseHandler(ctx: Context): (endpoint: string, payload: BrowsePayl
           ? String(p.base) : null;
         if (!base)
           return { ok: false, error: { code: "bad-request", message: "base must be 'worktree', 'commit', or a change id" } };
+        // ignoreWs: a boolean flag → jj's `-w` / git's `--ignore-all-space`
+        // (static flags; no user text reaches the arg array).
+        const ignoreWs = p.ignoreWs === true;
         // Containment: the path need not exist (deleted files diff fine).
         await resolveInWorkspace(ws.root, relPath);
         // The code pathspec-escapes the client-supplied path per backend.
@@ -477,8 +528,13 @@ function makeBrowseHandler(ctx: Context): (endpoint: string, payload: BrowsePayl
         const backend = backendVerdict.get(ws.root);
         let res: import("./jj.js").JjResult | import("./git.js").GitResult;
         if (backend === "git") {
+          // --histogram: anchors on rare lines first (patience extended) —
+          // better alignment than the default myers when a block repeats,
+          // at myers-like speed (requires git ≥ 2.33). jj's `--git` diff
+          // exposes no algorithm flag, so the flag is git-branch-only.
+          const diffFlags = ["--histogram", ...(ignoreWs ? ["--ignore-all-space"] : [])];
           if (base === "worktree") {
-            res = await git(ws.root, ["diff", "HEAD", "--", gitPath]);
+            res = await git(ws.root, ["diff", ...diffFlags, "HEAD", "--", gitPath]);
             if (!res.ok && !isBadRevision(res))
               return { ok: false, error: { code: res.code, message: res.message } };
             // An empty patch is a STATE for a tracked-clean file. An
@@ -488,13 +544,13 @@ function makeBrowseHandler(ctx: Context): (endpoint: string, payload: BrowsePayl
             if (!res.ok || asText(res.value).trim() === "") {
               const tracked = await git(ws.root, ["ls-files", "--error-unmatch", "--", gitPath]);
               if (!tracked.ok) {
-                const ni = await gitUntrackedDiff(ws.root, relPath);
+                const ni = await gitUntrackedDiff(ws.root, relPath, diffFlags);
                 if (!ni.ok) return { ok: false, error: { code: ni.code, message: ni.message } };
                 res = ni;
               }
             }
           } else if (base === "commit") {
-            res = await git(ws.root, ["diff", "HEAD~1", "HEAD", "--", gitPath]);
+            res = await git(ws.root, ["diff", ...diffFlags, "HEAD~1", "HEAD", "--", gitPath]);
           } else {
             // A selected commit: its patch vs its parent. `git show
             // --format= <sha>` is ROOT-COMMIT-SAFE. It diffs a parentless
@@ -502,7 +558,7 @@ function makeBrowseHandler(ctx: Context): (endpoint: string, payload: BrowsePayl
             // "bad revision". Empty patch = the commit did not touch this
             // path. A merge's combined diff ("diff --cc …") trips the guard
             // after the call → the error note.
-            res = await git(ws.root, ["show", "--format=", base, "--", gitPath]);
+            res = await git(ws.root, ["show", "--format=", ...diffFlags, base, "--", gitPath]);
           }
           if (!res.ok) return { ok: false, error: { code: res.code, message: res.message } };
           // Guard (git-support.md §6). A submodule/gitlink emits non-diff-
@@ -518,11 +574,12 @@ function makeBrowseHandler(ctx: Context): (endpoint: string, payload: BrowsePayl
           // parent(s). A path the commit never touched yields an EMPTY patch
           // (a state). An unresolvable id (history rewritten) → jj-error →
           // client note.
+          const wsFlag = ignoreWs ? ["-w"] : [];
           const args = base === "worktree"
-            ? ["diff", "--git", "--", jjPath]
+            ? ["diff", "--git", ...wsFlag, "--", jjPath]
             : base === "commit"
-              ? ["diff", "-r", "@-", "--git", "--", jjPath] // @- not @: after `jj commit`, @ is the fresh EMPTY worktree commit
-              : ["diff", "-r", base, "--git", "--", jjPath];
+              ? ["diff", "-r", "@-", "--git", ...wsFlag, "--", jjPath] // @- not @: after `jj commit`, @ is the fresh EMPTY worktree commit
+              : ["diff", "-r", base, "--git", ...wsFlag, "--", jjPath];
           res = await jj(ws.root, args);
           if (!res.ok) return { ok: false, error: { code: res.code, message: res.message } };
         }

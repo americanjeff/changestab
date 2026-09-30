@@ -1,7 +1,7 @@
 {
   "name": "changestab",
-  "version": "0.2.0",
-  "description": "Read-only, session-workspace-scoped VCS file viewer for the dsh web GUI — its own Changes tab in the right column, alongside the built-in file browser (change tree nav, agent action chips, Open-in-Files handoff; generic connection.rpc host channel + web client).",
+  "version": "0.3.0",
+  "description": "Read-only changes view for the dsh (DeepSeek Harness) web GUI — its own Changes tab in the right column, alongside the built-in file browser: a jj/git change tree, each change's changed files, and side-by-side or unified diffs, with click-to-ref and Open-in-Files handoff.",
   "author": "American Jeff <gitjeff@americanjeff.com>",
   "license": "MIT",
   "repository": {
@@ -13,8 +13,8 @@
     "deepseek-harness",
     "cordis",
     "plugin",
-    "files",
-    "file-browser",
+    "changes",
+    "diff",
     "jj",
     "git"
   ],

@@ -397,6 +397,25 @@ export async function jjLogPage(workspaceRoot: string, offset: number, limit: nu
   return { commits: all.slice(offset, offset + limit) };
 }
 
+/**
+ * The SELECTED change's full commit message (the change tree's rows carry
+ * only `first_line()` — the log templates keep the 50-row wire compact, and
+ * a raw multi-line description would break their line-based parse).
+ * `jj log -G -r <rev> -T 'description'`: the template is the raw
+ * description, which jj emits VERBATIM — 0 bytes when empty (verified
+ * 0.45). `<rev>` is the row's COMMIT id (a divergent change's two rows
+ * share a change id, but each row describes its own commit; a commit id
+ * resolves to exactly one row in the revset) or `@` for the working-copy
+ * row. Trailing newlines are stripped host-side (a display normalization —
+ * interior blank lines are kept). A failure (a rewritten rev) → "" (the
+ * client then shows nothing; the row's first line still stands).
+ */
+export async function jjDescription(workspaceRoot: string, rev: string): Promise<string> {
+  const res = await jj(workspaceRoot, ["log", "-G", "-r", rev, "-T", "description"]);
+  if (!res.ok) return "";
+  return String(res.value).replace(/\n+$/, "");
+}
+
 export type JjWorkspaceStatusResult =
   | {
       ok: true;

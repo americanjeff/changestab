@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.0] - 2026-09-29
+
+- The selected change's full message now shows in a strip above the changed files.
+- Divergent (branched) changes: each tree row now selects its own commit — selecting one row no longer highlights the whole change.
+- Diff view: an "ignore whitespace" toggle, and moved or whitespace-only lines pair with their own copy and render dimmed instead of as red/green false changes.
+
 ## [0.2.0] - 2026-09-28
 
 - Pivot to a changes view: the tab is now "Changes" — a jj/git change tree in the nav, each change's changed files (directory-grouped, with status badges), and diffs (side-by-side or unified by pane width), all updating live.

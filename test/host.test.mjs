@@ -195,6 +195,23 @@ const call = async (endpoint, payload, rpcId = "rpc-" + Math.random().toString(1
 { const r = await call("log", { offset: 0, limit: 50 });
   assert.ok(!r.ok && r.error.code === "bad-request", "log with no sessionId → bad-request: " + JSON.stringify(r)); n++; }
 
+// The `desc` endpoint (the selected change's full message). `ws` is PLAIN
+// (no VCS), so the "none" backend degrades to an empty description — the
+// client then shows no strip. (jj/git message content is exercised against
+// real repos in jj/git .test.mjs; only the dispatch + validation live here.)
+{ const r = await call("desc", { sessionId: SESSION_ID, rev: "worktree" });
+  assert.ok(r.ok && r.value.description === "", "desc on a non-VCS workspace → '': " + JSON.stringify(r)); n++; }
+{ const r = await call("desc", { sessionId: "nope", rev: "worktree" });
+  assert.ok(!r.ok && r.error.code === "session-not-found", "desc with an unknown session → session-not-found: " + JSON.stringify(r)); n++; }
+{ const r = await call("desc", { rev: "worktree" });
+  assert.ok(!r.ok && r.error.code === "bad-request", "desc with no sessionId → bad-request: " + JSON.stringify(r)); n++; }
+{ const r = await call("desc", { sessionId: SESSION_ID, rev: "a@ & all()" });
+  assert.ok(!r.ok && r.error.code === "bad-request", "desc revset injection via rev → bad-request (id alphabet): " + JSON.stringify(r)); n++; }
+{ const r = await call("desc", { sessionId: SESSION_ID, rev: "abc12" });
+  assert.ok(!r.ok && r.error.code === "bad-request", "desc too-short rev → bad-request: " + JSON.stringify(r)); n++; }
+{ const r = await call("desc", { sessionId: SESSION_ID, rev: "commit" });
+  assert.ok(!r.ok && r.error.code === "bad-request", "desc 'commit' (a diff BASE keyword) → bad-request: " + JSON.stringify(r)); n++; }
+
 // finishFileShow (pure) — the diff endpoint's binary sides classify through
 // this same finisher: the extension fallback fires only when sniff() is null,
 // so an unknown source extension renders as TEXT via the NUL heuristic (no NUL),

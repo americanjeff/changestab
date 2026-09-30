@@ -466,6 +466,20 @@ export async function gitSnapshotListing(
 }
 
 /**
+ * The SELECTED change's full commit message: `git log -1 --format=%B <sha>`
+ * — %B is the raw body exactly as committed (subject + blank + body; no
+ * framing newline when it ends in one, git pads one when it doesn't).
+ * Trailing newlines are stripped (a display normalization — interior blank
+ * lines are kept). A failure (unresolvable rev, a repo with no commits) →
+ * "" (the client then shows nothing).
+ */
+export async function gitDescription(workspaceRoot: string, rev: string): Promise<string> {
+  const res = await git(workspaceRoot, ["log", "-1", "--format=%B", rev]);
+  if (!res.ok) return "";
+  return String(res.value).replace(/\n+$/, "");
+}
+
+/**
  * A file's bytes at a git revision: `git show <rev>:<path>` (buffer). A
  * missing path → git-error ("does not exist in <rev>"), the jj "No such
  * path" analog. Post-processing (sniff / 1 MB cap / displayable-binary
@@ -488,6 +502,6 @@ export async function gitFileShow(workspaceRoot: string, rev: string, relPath: s
  * exit-1 tolerance in `git()` applies (content ⇒ exit 1 ⇒ success). An
  * empty file exits 0 with an empty patch (a state, not an error).
  */
-export function gitUntrackedDiff(workspaceRoot: string, relPath: string): Promise<GitResult> {
-  return git(workspaceRoot, ["diff", "--no-index", "--", "/dev/null", join(workspaceRoot, relPath)]);
+export function gitUntrackedDiff(workspaceRoot: string, relPath: string, diffFlags: string[] = []): Promise<GitResult> {
+  return git(workspaceRoot, ["diff", "--no-index", ...diffFlags, "--", "/dev/null", join(workspaceRoot, relPath)]);
 }
